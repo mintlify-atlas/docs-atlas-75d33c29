@@ -1,0 +1,94 @@
+---
+title: "Web Client: Svelte Storefront with Offline Support"
+sidebarTitle: "Overview"
+description: "The AlejoTaller web client is a Svelte/TypeScript SPA with offline-first IndexedDB persistence, Appwrite backend integration, and real-time Pusher sale verification."
+---
+
+The AlejoTaller web client is the browser-based surface of the platform, giving customers a complete electronics store experience without requiring a native app installation. It mirrors the same offline-first principles and layered architecture found in the Android clients, bringing purchase and reservation capabilities to any modern web browser.
+
+## Role in the Monorepo
+
+The web client (`web/`) sits alongside the Android client, Android operator app, and the `alejo_publisher` function service inside the AlejoTaller monorepo. Its responsibilities are scoped to the customer-facing experience:
+
+- **Onboarding & commerce** — account creation, authentication, product browsing, and purchase or reservation from a browser
+- **Offline persistence** — all critical data (products, categories, sales, promotions, exchange rates) is written to IndexedDB via Dexie, so the app remains usable under poor or absent connectivity
+- **Real-time verification events** — after a sale is created, the app subscribes to a Pusher channel and reacts immediately when an operator confirms or rejects the reservation
+- **APK download guidance** — customers and operators can download the Android client and operator APKs directly from GitHub Releases, with URLs provided by environment variables
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| UI framework | Svelte 5 + TypeScript |
+| Build tool | Vite 8 |
+| Local database | Dexie 4 (IndexedDB) |
+| Backend SDK | Appwrite Web SDK 22 |
+| Real-time events | Pusher JS 8 |
+| UI components | M3 Svelte 7 |
+| Icons | Lucide Svelte |
+| Type checking | svelte-check + TypeScript 5 |
+
+## Architectural Philosophy
+
+The web client follows the same feature-first, layered architecture used in the Android surfaces. Every feature module is organized into `data/`, `domain/`, and `presentation/` layers, keeping business rules out of UI components and making each feature independently testable.
+
+```
+core/feature/{name}/
+├── data/
+│   ├── dto/
+│   ├── mapper/
+│   └── repository/
+├── domain/
+│   ├── caseuse/
+│   ├── entity/
+│   └── repository/
+└── presentation/
+    └── viewmodel/
+```
+
+This prevents the web version from becoming an isolated, rule-free reimplementation. The same use-case-per-action pattern, repository contracts, and offline-first reconciliation approach that governs Android also governs the web surface.
+
+## Feature Modules
+
+The following feature modules live under `web/src/core/feature/`:
+
+| Module | Responsibility |
+|---|---|
+| `auth` | Authentication, session management, user profile, admin user CRUD |
+| `product` | Product catalog, offline-first fetch and cache |
+| `category` | Category listing and filtering |
+| `sale` | Cart management, sale registration, delivery type, real-time verification |
+| `exchange` | Currency exchange rates from El Toque and DirectorioCubano APIs |
+| `notification` | Promotion/announcement delivery via Pusher channels |
+| `support` | Customer support inbox and messaging |
+| `settings` | Application settings |
+
+## Sale Verification Flow
+
+The web client is a subscriber in the end-to-end sale verification pipeline:
+
+1. The customer creates a purchase or reservation; the sale is persisted locally and pushed to Appwrite.
+2. The operator app scans or loads the reservation and verifies or rejects it.
+3. The operator sends the decision to the `alejo_publisher` function, which publishes the event to Pusher.
+4. The web client receives `sale:confirmed` or `sale:rejected` on the `sale-verification-{userId}` channel.
+5. The `saleAlertStore` updates and the UI renders the appropriate confirmation or rejection alert.
+
+## Live Deployment
+
+The web client is deployed on Render and publicly accessible:
+
+**[https://alejotaller.onrender.com/](https://alejotaller.onrender.com/)**
+
+## Explore Further
+
+<CardGroup cols={3}>
+  <Card title="Features" icon="sparkles" href="/apps/web/features">
+    Auth flows, product catalog, offline cart, sale registration, and Pusher real-time events in detail.
+  </Card>
+  <Card title="Development" icon="code" href="/apps/web/development">
+    Local setup, environment variables, project structure, and build commands.
+  </Card>
+  <Card title="Publisher Function" icon="bolt" href="/apps/publisher/overview">
+    The lightweight HTTP service that publishes Pusher events without exposing secrets on the frontend.
+  </Card>
+</CardGroup>

@@ -1,0 +1,198 @@
+---
+title: "AlejoTaller Environment Variables Reference"
+sidebarTitle: "Environment Variables"
+description: "Complete reference for all environment variables required by the AlejoTaller web client, Publisher microservice, and Android apps via local.properties and BuildConfig."
+---
+
+AlejoTaller is composed of three runtime surfaces — the Svelte web client, the `alejo_publisher` Node.js microservice, and two Android applications — each with its own configuration layer. This page documents every variable expected by each surface and explains its purpose. Keep all secrets out of version control; use `.env` files locally and your hosting provider's secret manager in production.
+
+---
+
+## Web Client (`.env`)
+
+The web client is built with Vite. All variables must be prefixed with `VITE_` so Vite exposes them to the browser bundle at build time. Create a `.env` file at the root of the `web/` directory and populate it before running `pnpm dev` or building for production.
+
+### Appwrite
+
+| Variable | Required | Description |
+|---|---|---|
+| `VITE_APPWRITE_ENDPOINT` | ✅ | Full URL of your Appwrite instance, e.g. `https://cloud.appwrite.io/v1`. |
+| `VITE_APPWRITE_PROJECT_ID` | ✅ | The unique ID of your Appwrite project. |
+| `VITE_APPWRITE_DATABASE_ID` | ✅ | ID of the Appwrite database that holds the products, categories, and sales collections. |
+| `VITE_APPWRITE_STORAGE_BUCKET_ID` | ✅ | ID of the storage bucket used for product images. |
+| `VITE_APPWRITE_USERS_FUNCTION` | ✅ | ID of the Appwrite Cloud Function that handles privileged user-management operations. |
+| `VITE_APPWRITE_CONSOLE_URL` | ⬜ | URL to the Appwrite console — used in admin shortcuts inside the web dashboard. |
+
+### Google Auth
+
+| Variable | Required | Description |
+|---|---|---|
+| `VITE_GOOGLE_CLIENT_ID` | ✅ | OAuth 2.0 client ID from Google Cloud Console for web sign-in. |
+| `VITE_GOOGLE_AUTH_URL` | ✅ | The redirect or OAuth authorization URL used to initiate Google sign-in. |
+
+### Pusher
+
+| Variable | Required | Description |
+|---|---|---|
+| `VITE_PUSHER_APP_ID` | ✅ | Pusher application ID. Used by the web client only for display/config — triggering is done server-side via `alejo_publisher`. |
+| `VITE_PUSHER_KEY` | ✅ | Pusher application key. This is the **public** key embedded in the browser bundle. |
+| `VITE_PUSHER_CLUSTER` | ✅ | Pusher cluster region, e.g. `mt1`. Must match the cluster chosen when creating the app. |
+| `VITE_PUSHER_SECRETS` | ⚠️ | Pusher application secret. **Avoid exposing this in client-side code** — prefer using it only in `alejo_publisher`. |
+| `VITE_PUSHER_SUPPORT_CHANNEL` | ✅ | Name of the Pusher channel used for customer support messages. |
+| `VITE_PUSHER_PROMO_CHANNEL` | ✅ | Name of the Pusher channel for promotional broadcasts. |
+| `VITE_PUSHER_NOTIFICATION_CHANNEL` | ✅ | Name of the Pusher channel for general user notifications. |
+| `VITE_PUSHER_IA_CHANNEL` | ⬜ | Name of the Pusher channel reserved for AI-driven interactions. |
+
+### Publisher / Realtime
+
+| Variable | Required | Description |
+|---|---|---|
+| `VITE_ALSET_PULSE_BASE_URL` | ✅ | Base URL of the `alejo_publisher` microservice, e.g. `https://alejo-publisher.onrender.com`. |
+| `VITE_ALSET_PULSE_API_KEY` | ✅ | Shared secret API key sent as `Authorization: Bearer <key>` when calling `alejo_publisher`. Must match `PUBLISHER_API_KEY` in the publisher's environment. |
+| `VITE_ALSET_PULSE_SUPPORT_MESSAGES_PATH` | ⬜ | Path appended to `VITE_ALSET_PULSE_BASE_URL` for support-message endpoints. |
+
+### Telegram
+
+| Variable | Required | Description |
+|---|---|---|
+| `VITE_TELEGRAM_API_URL` | ⬜ | Base URL of the Telegram Bot API, typically `https://api.telegram.org`. |
+| `VITE_TELEGRAM_BOT_KEY` | ⬜ | API token for the Telegram bot used to send order or support notifications. |
+| `VITE_TELEGRAM_CHAT_ID` | ⬜ | Numeric ID of the Telegram chat or group that receives notifications. |
+
+### APK Distribution
+
+| Variable | Required | Description |
+|---|---|---|
+| `VITE_CLIENT_ANDROID_APK_URL` | ⬜ | Direct download URL for the latest client Android APK. |
+| `VITE_OPERATOR_ANDROID_APK_URL` | ⬜ | Direct download URL for the latest operator Android APK. |
+| `VITE_GITHUB_RELEASES_URL` | ⬜ | URL to the GitHub Releases page listing all versioned APK releases. |
+
+### Currency APIs
+
+| Variable | Required | Description |
+|---|---|---|
+| `VITE_EL_TOQUE_API_URL` | ⬜ | Base URL for the El Toque exchange-rate API. |
+| `VITE_EL_TOQUE_API_KEY` | ⬜ | API key for authenticating requests to El Toque. |
+| `VITE_DIRECTORIOCUBO_API_URL` | ⬜ | Base URL for the DirectorioCubano API used as a secondary exchange-rate source. |
+
+### Other / Admin
+
+| Variable | Required | Description |
+|---|---|---|
+| `VITE_PASSWORD_RESET_URL` | ⬜ | URL that Appwrite redirects users to after initiating a password reset. |
+| `VITE_INFRA_STATUS_URL` | ⬜ | URL to the infrastructure status page (e.g. a Statuspage or UptimeRobot dashboard). |
+| `VITE_ADMIN_DASHBOARD_URL` | ⬜ | URL of the separate admin dashboard application. |
+| `VITE_RENDER_CONSOLE_URL` | ⬜ | URL to the Render hosting console — used in admin shortcuts. |
+| `VITE_CLOUDFLARE_CONSOLE_URL` | ⬜ | URL to the Cloudflare dashboard — used in admin shortcuts. |
+
+---
+
+## Publisher Microservice (`alejo_publisher`)
+
+The publisher is a small Express server deployed on Render. Its variables are read at startup via `process.env` (loaded from a `.env` file locally, or from Render environment variables in production). The service will **throw an error and refuse to start** if any required variable is missing.
+
+<Warning>
+`PUBLISHER_API_KEY` defaults to `tallerAlejoTestApiKey` in the example `.env` file. **You must change this to a strong, randomly generated secret before deploying to production.** Any caller with this key can trigger Pusher events on behalf of your application.
+</Warning>
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `PORT` | ⬜ | `3000` | TCP port the Express server listens on. Render sets this automatically. |
+| `PUBLISHER_API_KEY` | ✅ | — | Bearer token that callers must include in the `Authorization` header. Must match `VITE_ALSET_PULSE_API_KEY` in the web client. |
+| `PUSHER_APP_ID` | ✅ | — | Pusher application ID. |
+| `PUSHER_KEY` | ✅ | — | Pusher application key. |
+| `PUSHER_SECRET` | ✅ | — | Pusher application **secret**. Never expose this to any client. |
+| `PUSHER_CLUSTER` | ✅ | — | Pusher cluster, e.g. `mt1`. |
+| `ALLOW_ORIGIN` | ⬜ | `*` | Comma-separated list of allowed CORS origins. Set to the web client's domain in production, e.g. `https://alejotaller.onrender.com`. |
+
+A minimal production `.env` for the publisher looks like this:
+
+```env
+PORT=3000
+PUBLISHER_API_KEY=<your-strong-random-secret>
+PUSHER_APP_ID=<your-app-id>
+PUSHER_KEY=<your-pusher-key>
+PUSHER_SECRET=<your-pusher-secret>
+PUSHER_CLUSTER=mt1
+ALLOW_ORIGIN=https://alejotaller.onrender.com
+```
+
+---
+
+## Android Apps (`local.properties` → `BuildConfig`)
+
+Both Android applications — the client app (`app/`) and the operator app (`alejotallerscan/`) — read secrets from a `local.properties` file at the repository root. During the Gradle build, the `injectLocalProperties()` function copies each property into a typed `BuildConfig` constant, so the secret never needs to be hard-coded in Kotlin source.
+
+<Note>
+`local.properties` is listed in `.gitignore` and is never committed. Each developer and CI runner must create and populate this file manually before building.
+</Note>
+
+### Appwrite
+
+| Key | Description |
+|---|---|
+| `APPWRITE_PROJECT_ENDPOINT` | Full URL of the Appwrite instance. |
+| `APPWRITE_PROJECT_ID` | Appwrite project ID. |
+| `APPWRITE_DATABASE_ID` | ID of the Appwrite database. |
+| `APPWRITE_BUCKECT_ID` | ID of the Appwrite storage bucket for product images. |
+| `CATEGORY_TABLE_ID` | Appwrite collection ID for the `categories` collection. |
+| `PRODUCT_TABLE_ID` | Appwrite collection ID for the `products` collection. |
+| `SALE_TABLE_ID` | Appwrite collection ID for the `sales` collection. |
+| `APPWRITE_TELEGRAM_FUNCTION_URL` | URL of the Appwrite Cloud Function that dispatches Telegram notifications. |
+
+### Google Auth
+
+| Key | Description |
+|---|---|
+| `GOOGLE_CLOUD_WEBCLIENT` | OAuth 2.0 web client ID (used by both apps via Credential Manager). |
+| `GOOGLE_CLOUD_ANDROID_DEBUG` | Android debug OAuth client ID. |
+| `GOOGLE_CLOUD_ANDROID_RELEASE` | Android release OAuth client ID. |
+
+### Telegram
+
+| Key | Description |
+|---|---|
+| `TELEGRAM_API_URL` | Telegram Bot API base URL. |
+| `TELEGRAM_BOT_KEY` | Bot API token. |
+| `TELEGRAM_CHAT_ID` | Target chat or group ID. |
+| `TELEGRAM_GROUP_NAME` | Display name of the target Telegram group. |
+| `TELEGRAM_GROUP_TYPE` | Type of the Telegram group (e.g. `group`, `supergroup`). |
+
+### Pusher
+
+| Key | Description |
+|---|---|
+| `PUSHER_APP_ID` | Pusher application ID. |
+| `PUSHER_API_KEY` | Pusher public key. |
+| `PUSHER_API_SECRETS` | Pusher secret. |
+| `PUSHER_CLUSTER` | Pusher cluster region. |
+| `PUSHER_SALE_CHANNEL` | Channel prefix used for per-sale real-time events. |
+| `PUSHER_SUPPORT_CHANNEL` | Support channel name. |
+| `PUSHER_PROMO_CHANNEL` | Promo broadcast channel name. |
+| `PUSHER_NOTIFICATION_CHANNEL` | General notification channel name. |
+| `PUSHER_IA_CHANNEL` | AI interaction channel name. |
+
+### Publisher Service (operator app only)
+
+| Key | Description |
+|---|---|
+| `PUBLISHER_BASE_URL` | Base URL of the deployed `alejo_publisher` microservice. |
+| `PUBLISHER_API_KEY` | Bearer token sent by the operator app when calling the publisher. Must match the publisher's `PUBLISHER_API_KEY`. |
+
+### PostHog Analytics
+
+| Key | Description |
+|---|---|
+| `POSTHOG_TOKEN` | PostHog project API key for event ingestion. |
+| `POSTHOG_HOST` | PostHog ingest URL, e.g. `https://app.posthog.com`. |
+
+### Soluciones Cuba Pay
+
+| Key | Description |
+|---|---|
+| `SOLUCIONES_CUBA_PAY_API_URL` | Base URL of the Soluciones Cuba payment gateway. |
+| `SOLUCIONES_CUBA_API_KEY` | API key for the payment gateway. |
+| `SOLUCIONES_CUBA_MERCHANT_ID` | Merchant identifier assigned by the gateway. |
+| `SOLUCIONES_CUBA_SUCCESS_URL` | Redirect URL on successful payment. |
+| `SOLUCIONES_CUBA_CANCEL_URL` | Redirect URL on cancelled payment. |
+| `SOLUCIONES_CUBA_CALLBACK_URL` | Webhook URL the gateway calls to confirm payment status. |

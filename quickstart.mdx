@@ -1,47 +1,183 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get the AlejoTaller Monorepo Running Locally"
+sidebarTitle: "Quickstart"
+description: "Clone AlejoTaller and run the Android apps, Svelte web client, and Publisher microservice locally in under 15 minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+AlejoTaller is a monorepo with four independently runnable surfaces. This guide walks you through cloning the repository and starting every surface — the two Android apps, the Svelte web client, and the `alejo_publisher` microservice — with the minimum configuration required to connect them to real Appwrite and Pusher backends.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+<Note>
+  All four surfaces require **real credentials** — there is no local mock or stub mode for Appwrite or Pusher. You must have a running Appwrite instance (cloud or self-hosted) and a Pusher account before proceeding. The steps below guide you through providing those credentials in the correct locations.
+</Note>
 
 ## Prerequisites
 
-Before you begin, you must have:
+Before you begin, make sure you have the following installed and available:
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+- **Android Studio Flamingo or newer** — required to build and run the two Android applications
+- **JDK 17** — required by the Android Gradle build; set `JAVA_HOME` or configure it in Android Studio
+- **Node.js 18 or newer** — required by the `alejo_publisher` microservice
+- **pnpm** — required by the Svelte web client (`npm install -g pnpm` if not already installed)
+- **A running Appwrite instance** — cloud at [cloud.appwrite.io](https://cloud.appwrite.io) or self-hosted
+- **A Pusher account** — create a free app at [pusher.com](https://pusher.com) to obtain `PUSHER_APP_ID`, `PUSHER_KEY`, `PUSHER_SECRET`, and `PUSHER_CLUSTER`
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
 
-    ```bash
-    npm install your-package
-    ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+### Clone the repository
 
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+```bash
+git clone https://github.com/danielitoCode/AlejoTaller.git
+cd AlejoTaller
+```
 
-    ```bash
-    your-cli start
-    ```
-  </Step>
-</Steps>
+### Configure `local.properties` for Android
+
+The Android build reads sensitive configuration from `local.properties` at the repo root and injects values into `BuildConfig`. Create or edit the file now:
+
+```properties
+# local.properties
+
+# Appwrite
+APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
+APPWRITE_PROJECT_ID=your_project_id
+
+# Publisher microservice URL (use http://10.0.2.2:3000 for the Android emulator)
+PUBLISHER_URL=http://10.0.2.2:3000
+
+# Pusher public key and cluster (used by the Android client for channel subscription)
+PUSHER_KEY=your_pusher_key
+PUSHER_CLUSTER=mt1
+```
+
+<Warning>
+  Never commit `local.properties` to version control. It is already listed in `.gitignore`. Treat every value in this file as a secret.
+</Warning>
+
+### Build the Android client app
+
+From the repository root, assemble a debug build of the customer-facing Android app:
+
+```bash
+./gradlew :app:assembleDebug
+```
+
+The resulting APK will be at `app/build/outputs/apk/debug/app-debug.apk`. Install it on a device or emulator using Android Studio or `adb install`.
+
+For a faster iteration cycle that skips APK packaging:
+
+```bash
+./gradlew :app:compileDebugKotlin
+```
+
+### Build the Android operator app
+
+Assemble the operator (AlejoTallerScan) app in the same way:
+
+```bash
+./gradlew :alejotallerscan:assembleDebug
+```
+
+To compile without packaging:
+
+```bash
+./gradlew :alejotallerscan:compileDebugKotlin
+```
+
+### Start the Svelte web client
+
+Navigate into the `web/` directory, install dependencies, and start the Vite development server:
+
+```bash
+cd web
+pnpm install
+pnpm dev
+```
 
 <Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
-
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+  The web client starts on **http://localhost:5173** by default — this is Vite's standard port. Open that URL in any modern browser after the dev server reports it is ready.
 </Tip>
+
+Configure web credentials by creating `web/.env` (or `web/.env.local`) with at minimum:
+
+```env
+PUBLIC_APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
+PUBLIC_APPWRITE_PROJECT_ID=your_project_id
+PUBLIC_PUSHER_KEY=your_pusher_key
+PUBLIC_PUSHER_CLUSTER=mt1
+```
+
+### Start the publisher function
+
+In a new terminal, navigate into `function/alejo_publisher/`, copy the example environment file, fill in your Pusher credentials, and start the service:
+
+```bash
+cd function/alejo_publisher
+cp .env.example .env
+```
+
+Edit `.env` and populate every variable:
+
+```env
+PORT=3000
+PUBLISHER_API_KEY=tallerAlejoTestApiKey
+PUSHER_APP_ID=your_pusher_app_id
+PUSHER_KEY=your_pusher_key
+PUSHER_SECRET=your_pusher_secret
+PUSHER_CLUSTER=mt1
+ALLOW_ORIGIN=*
+```
+
+Then install dependencies and start the service:
+
+```bash
+npm install
+npm run dev
+```
+
+### Verify the publisher health endpoint
+
+With the publisher running, confirm it is reachable:
+
+```bash
+curl http://localhost:3000/health
+```
+
+A successful response confirms the service is up and ready to receive publication requests from the operator app. You can also test the full publish path:
+
+```bash
+curl -X POST http://localhost:3000/sale-verification/publish \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer tallerAlejoTestApiKey" \
+  -d '{"saleId":"69c9593b002b167bf4fb","userId":"698f82750024bfe2dc52","decision":"confirmed","amount":20.5,"productCount":4,"cause":null}'
+```
+
+Expected response:
+
+```json
+{
+  "ok": true,
+  "channel": "sale-verification-698f82750024bfe2dc52",
+  "eventName": "sale:confirmed"
+}
+```
+
+</Steps>
+
+## What You Have Running
+
+After completing all steps you will have:
+
+| Surface | Location |
+|---|---|
+| Android client | Installed on device/emulator via `app-debug.apk` |
+| Android operator | Installed on device/emulator via `alejotallerscan-debug.apk` |
+| Svelte web client | http://localhost:5173 |
+| Publisher microservice | http://localhost:3000 |
+
+All four surfaces share the same Appwrite project and Pusher app, so a sale confirmed through the Android operator app will push a real-time event that both the web client and the Android client receive immediately.
+
+## Next Steps
+
+- See [Architecture](/architecture) for a full explanation of the feature-first layered structure and the six design patterns used across the monorepo.
+- See [Configuration & Environment Variables](/configuration/environment-variables) for the complete reference of every variable accepted by each surface.
+- The web client and publisher are deployable to Render — the `alejo_publisher` README documents the exact `Root Directory`, build command, and start command needed.

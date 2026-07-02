@@ -1,0 +1,176 @@
+---
+title: "Build and Run the AlejoTaller Operator App"
+sidebarTitle: "Build & Run"
+description: "Compile and deploy the AlejoTallerScan operator Android app with Gradle. Includes local.properties configuration, camera permissions, and debug install steps."
+---
+
+AlejoTallerScan is built as an Android application module inside the AlejoTaller monorepo. Gradle reads operator-specific keys directly from `local.properties` at the repo root and injects them into `BuildConfig` at compile time — no secrets are committed to version control.
+
+## Prerequisites
+
+Before building, make sure the following are in place:
+
+- **Android Studio** (latest stable) or a standalone Android SDK installation
+- **JDK 17** — the module sets `sourceCompatibility` and `targetCompatibility` to `VERSION_17`
+- **Android device or emulator** with a camera (physical device strongly recommended for QR scanning)
+- **Appwrite instance** with the sales collection and an operator-role account configured
+- **`alejo_publisher` service** running and reachable at a URL accessible from the device
+
+## Module Dependencies
+
+`alejotallerscan` depends on four shared modules. Gradle resolves them from the monorepo's `settings.gradle.kts`:
+
+```
+:shared-core
+:shared-auth
+:shared-sale
+:shared-data
+```
+
+All four must compile cleanly before the app module can build. Run `:shared-core:compileDebugKotlin` first if you encounter resolution errors.
+
+<Steps>
+
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/danielitoCode/AlejoTaller.git
+    cd AlejoTaller
+    ```
+  </Step>
+
+  <Step title="Create local.properties at the repo root">
+    The `build.gradle.kts` for `alejotallerscan` reads the following keys from `local.properties`. Create the file at the **monorepo root** (not inside the module):
+
+    ```properties
+    # Appwrite
+    APPWRITE_PROJECT_ENDPOINT=https://your-appwrite-instance/v1
+    APPWRITE_PROJECT_ID=your_project_id
+    APPWRITE_DATABASE_ID=your_database_id
+    SALE_TABLE_ID=your_sale_collection_id
+    PRODUCT_TABLE_ID=your_product_collection_id
+    CATEGORY_TABLE_ID=your_category_collection_id
+    APPWRITE_BUCKECT_ID=your_bucket_id
+    APPWRITE_TELEGRAM_FUNCTION_URL=
+
+    # Publisher service (critical — see warning below)
+    PUBLISHER_BASE_URL=https://your-alejo-publisher.onrender.com
+    PUBLISHER_API_KEY=tallerAlejoTestApiKey
+
+    # Pusher
+    PUSHER_APP_ID=your_pusher_app_id
+    PUSHER_API_KEY=your_pusher_key
+    PUSHER_API_SECRETS=your_pusher_secret
+    PUSHER_CLUSTER=mt1
+    PUSHER_SALE_CHANNEL=sale-verification
+    PUSHER_NOTIFICATION_CHANNEL=
+    PUSHER_PROMO_CHANNEL=
+    PUSHER_SUPPORT_CHANNEL=
+    PUSHER_IA_CHANNEL=
+
+    # Google (optional for operator build)
+    GOOGLE_CLOUD_WEBCLIENT=
+    GOOGLE_CLOUD_ANDROID_DEBUG=
+    GOOGLE_CLOUD_ANDROID_RELEASE=
+
+    # Telegram (optional)
+    TELEGRAM_BOT_KEY=
+    TELEGRAM_CHAT_ID=
+    TELEGRAM_GROUP_NAME=
+    TELEGRAM_GROUP_TYPE=
+    TELEGRAM_API_URL=
+
+    # Soluciones Cuba Pay (optional for operator build)
+    SOLUCIONES_CUBA_PAY_API_URL=
+    SOLUCIONES_CUBA_API_KEY=
+    SOLUCIONES_CUBA_MERCHANT_ID=
+    SOLUCIONES_CUBA_SUCCESS_URL=
+    SOLUCIONES_CUBA_CANCEL_URL=
+    SOLUCIONES_CUBA_CALLBACK_URL=
+
+    # PostHog (optional)
+    POSTHOG_TOKEN=
+    POSTHOG_HOST=
+    ```
+
+    <Warning>
+      `PUBLISHER_BASE_URL` and `PUBLISHER_API_KEY` must be set correctly. The sale verification flow calls `POST ${PUBLISHER_BASE_URL}/sale-verification/publish` with a `Bearer` token. If the URL is empty or unreachable, the publisher step will throw silently inside `PublisherSaleRealtimeNotifier` — Appwrite will have already written the state change, but no Pusher event will be broadcast, leaving the customer app and web client unresponsive after an operator decision.
+    </Warning>
+  </Step>
+
+  <Step title="Sync Gradle">
+    Open the project in Android Studio and click **Sync Project with Gradle Files**, or run from the command line:
+
+    ```bash
+    ./gradlew --quiet dependencies --configuration debugRuntimeClasspath
+    ```
+
+    This resolves all shared module dependencies and downloads any missing libraries.
+  </Step>
+
+  <Step title="Build the operator APK">
+    Assemble a debug APK for `alejotallerscan`:
+
+    ```bash
+    ./gradlew :alejotallerscan:assembleDebug
+    ```
+
+    The output APK is written to:
+
+    ```
+    alejotallerscan/build/outputs/apk/debug/alejotallerscan-debug.apk
+    ```
+  </Step>
+
+  <Step title="Quick compile check (Kotlin only)">
+    For a faster feedback loop during development — without producing an APK — compile only the Kotlin sources:
+
+    ```bash
+    ./gradlew :alejotallerscan:compileDebugKotlin
+    ```
+
+    This is also the right command to verify that all four shared modules compile cleanly together before a full build.
+  </Step>
+
+  <Step title="Install on a connected device">
+    With a device connected over ADB (USB or Wi-Fi), install directly:
+
+    ```bash
+    ./gradlew :alejotallerscan:installDebug
+    ```
+
+    Confirm the device is recognized first:
+
+    ```bash
+    adb devices
+    ```
+  </Step>
+
+  <Step title="Grant camera permission on first launch">
+    On the first launch, Android will prompt for the `CAMERA` permission. Approve it on the device. Without camera access the QR scanner cannot start, though all manual search and history features remain functional.
+
+    On Android 13+, the `POST_NOTIFICATIONS` permission is also requested at launch. Approve it to receive local conflict notifications when another operator processes a reservation first.
+
+    <Tip>
+      On a physical device you can pre-grant both permissions via ADB before launching:
+
+      ```bash
+      adb shell pm grant com.elitec.alejotallerscan android.permission.CAMERA
+      adb shell pm grant com.elitec.alejotallerscan android.permission.POST_NOTIFICATIONS
+      ```
+    </Tip>
+  </Step>
+
+</Steps>
+
+<Note>
+  AlejoTallerScan requires a real Appwrite account whose role field resolves to one of `operator`, `admin`, `administrator`, or `owner`. The `hasOperatorAccess()` check in `shared-auth` blocks any other account type at the domain layer. Creating test accounts directly in the Appwrite console is the fastest way to provision an operator credential during development.
+</Note>
+
+## Build Variants
+
+| Variant | Minify | Shrink | Notes |
+|---|---|---|---|
+| `debug` | No | No | Reads `local.properties`; suitable for device testing |
+| `release` | Yes (`R8`) | Yes | Also reads `local.properties`; use for distribution |
+
+The release variant uses `proguard-rules.pro` inside the `alejotallerscan` module. Ensure your ProGuard rules retain any Koin, Kotlinx Serialization, and OkHttp classes if you encounter crashes after minification.

@@ -1,0 +1,190 @@
+---
+title: "Deploy alejo_publisher to Render or Any Node Host"
+sidebarTitle: "Deployment"
+description: "Deploy the alejo_publisher microservice to Render or any Node.js-compatible host. Includes build commands, environment variable configuration, and health check setup."
+---
+
+`alejo_publisher` is a standard Node.js/Express application. It compiles to plain JavaScript via `tsc` and runs with `node`. Any host that can run a Node.js process — Render, Railway, Fly.io, a plain VPS — will work. This guide covers local development first, then a Render deployment.
+
+---
+
+## Local Development
+
+<Steps>
+  <Step title="Navigate to the service directory">
+    All commands in this guide run from inside the `alejo_publisher` package directory.
+
+    ```bash
+    cd function/alejo_publisher
+    ```
+  </Step>
+
+  <Step title="Copy the environment file">
+    The repository ships an `.env.example` with placeholder values. Copy it to create your local `.env`:
+
+    ```bash
+    cp .env.example .env
+    ```
+  </Step>
+
+  <Step title="Fill in your credentials">
+    Open `.env` and replace the placeholder values with your actual Pusher app credentials and a chosen API key:
+
+    ```env
+    PORT=3000
+    PUBLISHER_API_KEY=tallerAlejoTestApiKey
+    PUSHER_APP_ID=your_pusher_app_id
+    PUSHER_KEY=your_pusher_key
+    PUSHER_SECRET=your_pusher_secret
+    PUSHER_CLUSTER=mt1
+    ALLOW_ORIGIN=*
+    ```
+
+    <Note>
+      You can find your Pusher credentials in the **App Keys** section of the Pusher dashboard after creating or opening an app.
+    </Note>
+  </Step>
+
+  <Step title="Install dependencies">
+    ```bash
+    npm install
+    ```
+  </Step>
+
+  <Step title="Start the development server">
+    The `dev` script uses `tsx watch`, which compiles TypeScript on the fly and restarts on file changes — no separate build step needed.
+
+    ```bash
+    npm run dev
+    ```
+
+    You should see:
+
+    ```
+    [alejo_publisher] listening on port 3000
+    ```
+  </Step>
+
+  <Step title="Verify the service is healthy">
+    In a second terminal, confirm the health endpoint responds:
+
+    ```bash
+    curl http://localhost:3000/health
+    ```
+
+    Expected response:
+
+    ```json
+    { "ok": true, "service": "alejo_publisher" }
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Deploy to Render
+
+<Steps>
+  <Step title="Connect your GitHub repository to Render">
+    Log in to [render.com](https://render.com), go to **New → Web Service**, and connect the GitHub account that hosts the `AlejoTaller` monorepo. Authorize Render to access the repository.
+  </Step>
+
+  <Step title="Create a new Web Service">
+    Select the `AlejoTaller` repository from the list and click **Connect**.
+  </Step>
+
+  <Step title="Set the Root Directory">
+    Under **Root Directory**, enter:
+
+    ```
+    function/alejo_publisher
+    ```
+
+    Render will treat this subdirectory as the project root, so `package.json` is resolved correctly.
+  </Step>
+
+  <Step title="Set the Build Command">
+    ```bash
+    npm install && npm run build
+    ```
+
+    `npm run build` runs `tsc -p tsconfig.json`, which compiles TypeScript sources into the `dist/` folder.
+  </Step>
+
+  <Step title="Set the Start Command">
+    ```bash
+    npm run start
+    ```
+
+    This runs `node dist/presentation/http/server.js` — the compiled entry point.
+  </Step>
+
+  <Step title="Add environment variables">
+    In the **Environment** section, add the following key-value pairs. All variables are required except `PORT` and `ALLOW_ORIGIN`, which have defaults.
+
+    | Variable | Example value |
+    |---|---|
+    | `PORT` | `3000` |
+    | `PUBLISHER_API_KEY` | *(your secret key)* |
+    | `PUSHER_APP_ID` | *(from Pusher dashboard)* |
+    | `PUSHER_KEY` | *(from Pusher dashboard)* |
+    | `PUSHER_SECRET` | *(from Pusher dashboard)* |
+    | `PUSHER_CLUSTER` | `mt1` |
+    | `ALLOW_ORIGIN` | `https://your-operator-app.example.com` |
+  </Step>
+
+  <Step title="Deploy and verify">
+    Click **Create Web Service**. Render will run the build command, then start the process. Once the deploy succeeds, visit:
+
+    ```
+    https://your-service.onrender.com/health
+    ```
+
+    A `200 OK` response with `{ "ok": true, "service": "alejo_publisher" }` confirms the service is live.
+  </Step>
+</Steps>
+
+<Note>
+  Configure Render's **Health Check Path** to `/health`. Render will poll this path and automatically restart the instance if it stops responding, giving you zero-downtime recovery from crashes.
+</Note>
+
+---
+
+## Environment Variables Reference
+
+The `readEnv()` function in `server.ts` reads all variables at startup. Missing required variables throw immediately, so a misconfigured deploy fails fast during boot rather than at runtime.
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `PORT` | No | `3000` | TCP port the Express server listens on. Render injects its own `PORT` automatically. |
+| `PUBLISHER_API_KEY` | **Yes** | — | Bearer token that the operator app must send. Requests with a wrong or missing token receive `401`. |
+| `PUSHER_APP_ID` | **Yes** | — | Pusher application ID, found in the Pusher dashboard under **App Keys**. |
+| `PUSHER_KEY` | **Yes** | — | Pusher public key. Also used by client SDKs to subscribe to channels. |
+| `PUSHER_SECRET` | **Yes** | — | Pusher secret key used to sign server-side trigger requests. Never expose this to clients. |
+| `PUSHER_CLUSTER` | **Yes** | — | Pusher cluster region (e.g. `mt1`, `eu`, `ap2`). Must match the cluster chosen when the Pusher app was created. |
+| `ALLOW_ORIGIN` | No | `*` | CORS allowed origins. A single `*` permits all origins. For multiple specific origins, provide a comma-separated list: `https://app.example.com,https://admin.example.com`. |
+
+<Warning>
+  The default `PUBLISHER_API_KEY` value `tallerAlejoTestApiKey` is included in `.env.example` for convenience during local development. **This key must not be used in any production or staging environment.** Generate a strong random secret (at least 32 characters) and set it as the `PUBLISHER_API_KEY` before deploying.
+</Warning>
+
+<Warning>
+  Setting `ALLOW_ORIGIN=*` in production allows any website to call your service from a browser. In production, set `ALLOW_ORIGIN` to the exact origin(s) of the operator application — for example, `https://operator.yourdomain.com`. Multiple origins are supported as a comma-separated list.
+</Warning>
+
+---
+
+## Scripts Reference
+
+These scripts are defined in `package.json` and can be run from the `function/alejo_publisher` directory:
+
+| Script | Command | Use |
+|---|---|---|
+| `npm run dev` | `tsx watch src/presentation/http/server.ts` | Local development with hot reload |
+| `npm run build` | `tsc -p tsconfig.json` | Compile TypeScript to `dist/` |
+| `npm run start` | `node dist/presentation/http/server.js` | Run the compiled build (production) |
+| `npm run check` | `tsc -p tsconfig.json --noEmit` | Type-check without emitting files |
+
+<Tip>
+  Run `npm run check` in CI before building to catch type errors early without producing build artifacts.
+</Tip>

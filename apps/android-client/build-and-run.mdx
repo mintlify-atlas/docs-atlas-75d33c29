@@ -1,0 +1,185 @@
+---
+title: "Build and Run the AlejoTaller Android Client"
+sidebarTitle: "Build & Run"
+description: "Step-by-step instructions to compile and install the AlejoTaller Android client app using Gradle, with configuration via local.properties and BuildConfig."
+---
+
+The Android client app is a standard Gradle project rooted at `app/` inside the monorepo. All configuration — Appwrite credentials, Pusher keys, and payment gateway URLs — is injected at build time from a `local.properties` file into `BuildConfig` fields, so no secrets live in source control.
+
+## Prerequisites
+
+Before building, ensure your machine has:
+
+- **Android Studio Flamingo** or newer (Hedgehog / Iguana recommended)
+- **JDK 17** — the project sets `sourceCompatibility = JavaVersion.VERSION_17`
+- **Android SDK** with compile SDK **36** and min SDK **26** installed
+- **A running Appwrite instance** with the expected database, collections (`categories`, `products`, `sales`), and storage bucket configured
+- **Pusher credentials** for a Channels app (free tier is sufficient for development)
+
+<Note>
+The app will compile without a live Appwrite instance, but runtime authentication, catalog sync, and sale registration will all fail. Configure at least a local or cloud Appwrite project before running on a device or emulator.
+</Note>
+
+## Setup Steps
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the monorepo and open the root folder in Android Studio or your terminal:
+
+    ```bash
+    git clone https://github.com/danielitoCode/AlejoTaller.git
+    cd AlejoTaller
+    ```
+
+    Android Studio will detect `settings.gradle.kts` at the root and resolve all modules (`app`, `shared-auth`, `shared-core`, `shared-data`, `shared-sale`, `mapper-processor`).
+  </Step>
+
+  <Step title="Create local.properties">
+    Create (or edit) `local.properties` at the **repository root** — the same directory that contains `settings.gradle.kts`. This file is read by `app/build.gradle.kts` and its values are injected as `BuildConfig` string fields.
+
+    ```properties
+    # local.properties  (repository root — never commit this file)
+
+    # ── Appwrite ─────────────────────────────────────────────
+    APPWRITE_PROJECT_ENDPOINT=https://your-appwrite-host/v1
+    APPWRITE_PROJECT_ID=your_project_id
+    APPWRITE_DATABASE_ID=your_database_id
+    CATEGORY_TABLE_ID=your_category_collection_id
+    PRODUCT_TABLE_ID=your_product_collection_id
+    SALE_TABLE_ID=your_sale_collection_id
+    APPWRITE_BUCKECT_ID=your_storage_bucket_id
+    APPWRITE_TELEGRAM_FUNCTION_URL=https://your-appwrite-host/v1/functions/...
+
+    # ── Pusher ────────────────────────────────────────────────
+    PUSHER_API_KEY=your_pusher_key
+    PUSHER_CLUSTER=your_pusher_cluster
+    PUSHER_APP_ID=your_pusher_app_id
+    PUSHER_API_SECRETS=your_pusher_secret
+    PUSHER_SALE_CHANNEL=sale-verification
+    PUSHER_NOTIFICATION_CHANNEL=your_notification_channel
+    PUSHER_PROMO_CHANNEL=your_promo_channel
+    PUSHER_SUPPORT_CHANNEL=your_support_channel
+    PUSHER_IA_CHANNEL=your_ia_channel
+
+    # ── Google Sign-In (optional) ─────────────────────────────
+    GOOGLE_CLOUD_WEBCLIENT=your_web_client_id
+    GOOGLE_CLOUD_ANDROID_DEBUG=your_android_debug_client_id
+    GOOGLE_CLOUD_ANDROID_RELEASE=your_android_release_client_id
+
+    # ── Telegram notifications ────────────────────────────────
+    TELEGRAM_BOT_KEY=your_bot_token
+    TELEGRAM_CHAT_ID=your_chat_id
+    TELEGRAM_GROUP_NAME=your_group_name
+    TELEGRAM_GROUP_TYPE=your_group_type
+    TELEGRAM_API_URL=https://api.telegram.org
+
+    # ── Payment gateway (Soluciones Cuba Pay) ─────────────────
+    SOLUCIONES_CUBA_PAY_API_URL=https://gateway-url
+    SOLUCIONES_CUBA_API_KEY=your_api_key
+    SOLUCIONES_CUBA_MERCHANT_ID=your_merchant_id
+    SOLUCIONES_CUBA_SUCCESS_URL=https://your-success-url
+    SOLUCIONES_CUBA_CANCEL_URL=https://your-cancel-url
+    SOLUCIONES_CUBA_CALLBACK_URL=https://your-callback-url
+
+    # ── PostHog analytics (optional) ─────────────────────────
+    POSTHOG_TOKEN=your_posthog_token
+    POSTHOG_HOST=https://app.posthog.com
+    ```
+
+    <Warning>
+    Add `local.properties` to your `.gitignore`. It contains secret keys and must never be committed to source control.
+    </Warning>
+  </Step>
+
+  <Step title="Sync Gradle and assemble the debug APK">
+    **In Android Studio:** click *File → Sync Project with Gradle Files*, then use *Build → Make Project*.
+
+    **From the terminal** at the repository root:
+
+    ```bash
+    ./gradlew :app:assembleDebug
+    ```
+
+    For a faster compile check that skips APK packaging:
+
+    ```bash
+    ./gradlew :app:compileDebugKotlin
+    ```
+  </Step>
+
+  <Step title="Install on a device or emulator">
+    Connect an Android device (API 26+) with USB debugging enabled, or start an AVD in Android Studio, then run:
+
+    ```bash
+    ./gradlew :app:installDebug
+    ```
+
+    The app will be installed and can be launched from the device launcher.
+  </Step>
+
+  <Step title="Verify the build (optional CI check)">
+    Run the unit test suite and Kover coverage check to confirm nothing is broken:
+
+    ```bash
+    ./gradlew :app:testDebugUnitTest
+    ./gradlew :app:koverVerify
+    ```
+
+    Kover enforces a minimum line-coverage bound of **45 %** across non-generated classes.
+  </Step>
+</Steps>
+
+## Gradle Module Structure
+
+The `:app` module depends on all four shared modules. Gradle resolves them as project dependencies:
+
+```kotlin
+// app/build.gradle.kts (dependencies excerpt)
+dependencies {
+    implementation(project(":shared-core"))
+    implementation(project(":shared-sale"))
+    implementation(project(":shared-data"))
+    // shared-auth is pulled in transitively via shared-data / shared-sale
+}
+```
+
+```
+AlejoTaller/
+├── app/                ← :app  (Android client)
+├── shared-auth/        ← :shared-auth
+├── shared-core/        ← :shared-core
+├── shared-data/        ← :shared-data
+├── shared-sale/        ← :shared-sale
+├── mapper-processor/   ← :mapper-processor  (KSP annotation processor)
+├── build.gradle.kts
+└── settings.gradle.kts
+```
+
+<Tip>
+You can build any shared module individually to isolate compilation errors. For example, to check only the sale domain:
+
+```bash
+./gradlew :shared-sale:compileDebugKotlin
+```
+</Tip>
+
+## Release Build
+
+To produce a minified, resource-shrunk release APK:
+
+```bash
+./gradlew :app:assembleRelease
+```
+
+The release build type enables R8 (`isMinifyEnabled = true`, `isShrinkResources = true`) and reads the same `local.properties` keys as the debug build. Sign the APK with your release keystore before distribution.
+
+**APK output location:**
+
+```
+app/build/outputs/apk/debug/app-debug.apk
+app/build/outputs/apk/release/app-release.apk
+```
+
+## Download the Release APK
+
+Pre-built release APKs are published to **GitHub Releases** for the repository. The AlejoTaller web client at [https://alejotaller.onrender.com/](https://alejotaller.onrender.com/) provides guided download instructions that link directly to the latest release asset, making it easy for customers to sideload the app without building from source.

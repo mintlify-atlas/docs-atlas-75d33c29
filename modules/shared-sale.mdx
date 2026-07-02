@@ -1,0 +1,328 @@
+---
+title: "shared-sale: Shared Sale Domain and Realtime Module"
+sidebarTitle: "shared-sale"
+description: "The shared-sale Kotlin module defines the sale entity, BuyState lifecycle, realtime event use cases, and sync logic shared between the Android client and operator apps."
+---
+
+The `shared-sale` module is the single source of truth for all sale-related business logic across AlejoTaller's Android surfaces. Both the customer app (`app`) and the operator scanner (`alejotallerscan`) depend on this library so that sale creation, local persistence, remote synchronization, and realtime Appwrite event handling are never implemented twice. Concrete infrastructure (Room DAOs, Appwrite `Databases` calls, Pusher gateway) lives in `shared-data`; `shared-sale` exposes only pure domain entities, use cases, and repository/realtime contracts.
+
+## What It Exports
+
+| Layer | Contents |
+|---|---|
+| **Domain entities** | `Sale`, `SaleItem`, `PaymentChannel`, `BuyState`, `DeliveryType`, `Currency`, `DeliveryAddress` |
+| **Use cases** | 8 use cases covering creation, observation, sync, realtime, and delivery |
+| **Repository contracts** | `SaleRepository`, `SaleIdProvider`, `SaleNotificationUserProvider`, `TelegramNotificator`, `RealtimeSyncGateway` |
+| **DI** | `SharedSaleFeatureModule` (Koin anchor object) |
+
+---
+
+## Domain Entities
+
+### `Sale`
+
+The root aggregate. Every field that varies at runtime — verification state, delivery preference, address — is modelled as an optional or enum so the entity remains valid across all lifecycle stages.
+
+```kotlin
+@Serializable
+data class Sale(
+    val id: String,
+    val date: LocalDate,
+    val amount: Double,
+    val currency: Currency,
+    val verified: BuyState,
+    val products: List<SaleItem>,
+    val userId: String,
+    val customerName: String? = null,
+    val deliveryType: DeliveryType? = null,
+    val deliveryAddress: DeliveryAddress? = null
+)
+```
+
+**Supporting enums on `Sale`**
+
+```kotlin
+enum class BuyState { UNVERIFIED, VERIFIED, DELETED }
+
+/** Chosen by the customer once a sale reaches VERIFIED. */
+enum class DeliveryType {
+    PICKUP,   // Customer collects at the workshop
+    DELIVERY  // Workshop coordinates home delivery
+}
+
+enum class Currency { CUP, USD, MLC }
+```
+
+`DeliveryAddress` captures full Cuban addressing data and is JSON-serialized when persisted to Room or Appwrite:
+
+```kotlin
+@Serializable
+data class DeliveryAddress(
+    val province: String,
+    val municipality: String,
+    val mainStreet: String,
+    val betweenStreets: String? = null,
+    val phone: String,
+    val houseNumber: String,
+    val referenceName: String? = null
+)
+```
+
+### `SaleItem`
+
+A single line item within a sale. Both `productId` and `quantity` are validated eagerly in `init`.
+
+```kotlin
+@Serializable
+data class SaleItem(
+    val productId: String,
+    val quantity: Int,
+    val productName: String? = null
+) {
+    init {
+        require(productId.isNotBlank()) { "Product id cannot be blank" }
+        require(quantity > 0) { "Quantity must be greater than 0" }
+    }
+}
+```
+
+### `PaymentChannel`
+
+Enumerates the two accepted electronic payment rails in the Cuban market.
+
+```kotlin
+enum class PaymentChannel {
+    ULTRAPAY,
+    TRANSFERMOVIL
+}
+```
+
+---
+
+## BuyState Lifecycle
+
+A sale moves through the following states driven by operator confirmations arriving via Appwrite realtime events:
+
+```
+UNVERIFIED  ──► VERIFIED   (operator confirms the sale)
+UNVERIFIED  ──► DELETED    (operator rejects the sale)
+```
+
+`UpdateSaleVerificationFromRealtimeCaseUse` is the only place this transition is written; it guards against redundant saves by comparing the current state before persisting.
+
+<Warning>
+Once a sale reaches `VERIFIED` or `DELETED` it is not transitioned back. Any state already matching the incoming event is silently ignored.
+</Warning>
+
+---
+
+## Use Cases
+
+All use cases follow the Kotlin `operator fun invoke` convention.
+
+### `RegisterNewSaleCauseUse`
+
+Creates a new sale by assigning a unique ID, sending a Telegram notification to the current user, and persisting to the repository. The flow fails fast if the current user cannot be resolved.
+
+```kotlin
+class RegisterNewSaleCauseUse(
+    private val repository: SaleRepository,
+    private val saleIdProvider: SaleIdProvider,
+    private val notificationUserProvider: SaleNotificationUserProvider,
+    private val telegramNotificator: TelegramNotificator
+) {
+    suspend operator fun invoke(sale: Sale): Result<String> = runCatching {
+        val saleConfirmed = sale.copy(id = saleIdProvider.nextId())
+
+        val user = notificationUserProvider
+            .getCurrentUser()
+            .getOrElse { throw Exception("Transfer fail") }
+
+        telegramNotificator.notify(saleConfirmed, user)
+
+        repository.save(saleConfirmed)
+
+        saleConfirmed.id
+    }
+}
+```
+
+Returns a `Result<String>` containing the new sale's ID.
+
+### `ObserveAllSalesCaseUse`
+
+Wraps the `SaleRepository.observeAll()` cold `Flow` so ViewModels never import repository types directly.
+
+```kotlin
+class ObserveAllSalesCaseUse(
+    private val repository: SaleRepository
+) {
+    operator fun invoke(): Flow<List<Sale>> = repository.observeAll()
+}
+```
+
+### `GetSalesByIdCaseUse`
+
+Fetches a single sale by its string ID. Returns `Result.failure` if the sale is not found locally.
+
+```kotlin
+class GetSalesByIdCaseUse(
+    private val repository: SaleRepository
+) {
+    suspend operator fun invoke(id: String): Result<Sale> = runCatching {
+        repository.getById(id)
+    }
+}
+```
+
+### `UpdateDeliveryTypeCaseUse`
+
+Updates the `deliveryType` field on an existing sale after reading the current record. Accepts either `DeliveryType.PICKUP` or `DeliveryType.DELIVERY`.
+
+```kotlin
+class UpdateDeliveryTypeCaseUse(
+    private val repository: SaleRepository
+) {
+    suspend operator fun invoke(
+        saleId: String,
+        deliveryType: DeliveryType
+    ): Result<Unit> = runCatching {
+        val currentSale = repository.getById(saleId)
+        val updatedSale = currentSale.copy(deliveryType = deliveryType)
+        repository.save(updatedSale)
+    }
+}
+```
+
+### `SyncSalesCaseUse`
+
+Delegates a full offline-to-remote sync for a given `userId` to the repository. The heavy reconciliation logic (pending queue resolution, retry with back-off) lives in `SaleOfflineFirstRepository` inside `shared-data`.
+
+```kotlin
+class SyncSalesCaseUse(
+    private val repository: SaleRepository
+) {
+    suspend operator fun invoke(userId: String): Result<Unit> = repository.sync(userId)
+}
+```
+
+### `SubscribeRealtimeSyncCaseUse`
+
+Opens a Pusher/Appwrite realtime subscription for the given user. Exposes four callbacks so callers can react to connection state, sale events, and promotional pushes independently.
+
+```kotlin
+class SubscribeRealtimeSyncCaseUse(
+    private val gateway: RealtimeSyncGateway
+) {
+    operator fun invoke(
+        userId: String,
+        onConnect: () -> Unit,
+        onDisconnect: () -> Unit,
+        onSaleEvent: (SaleRealtimeEvent) -> Unit,
+        onPromotion: (Promotion) -> Unit = {}
+    ) {
+        gateway.subscribe(
+            userId = userId,
+            onConnect = onConnect,
+            onDisconnect = onDisconnect,
+            onSaleEvent = onSaleEvent,
+            onPromotion = onPromotion
+        )
+    }
+
+    fun unsubscribeAll() {
+        gateway.unsubscribeAll()
+    }
+}
+```
+
+<Tip>
+Call `unsubscribeAll()` in the ViewModel's `onCleared()` or the composable's `DisposableEffect` cleanup to prevent leaked Pusher subscriptions.
+</Tip>
+
+### `InterpretSaleRealtimeEventCaseUse`
+
+Parses an incoming `SaleRealtimeEvent` and converts it into a list of `SaleRealtimeCommand` actions (in-app message + push notification). Returns an empty list if the event is missing a `saleId` or `userId`.
+
+```kotlin
+class InterpretSaleRealtimeEventCaseUse {
+    operator fun invoke(event: SaleRealtimeEvent): List<SaleRealtimeCommand> {
+        if (event.saleId.isEmpty() || event.userId.isEmpty()) return emptyList()
+        return if (event.isSuccess) {
+            listOf(
+                SaleRealtimeCommand.InAppMessage(
+                    message = "Pedido ${event.saleId} confirmado",
+                    kind = RealtimeMessageKind.Success
+                ),
+                SaleRealtimeCommand.PushNotification(
+                    title = "Pedido confirmado",
+                    body = "Tu pedido ${event.saleId} fue confirmado"
+                )
+            )
+        } else {
+            listOf(
+                SaleRealtimeCommand.InAppMessage(
+                    message = "Pedido ${event.saleId} rechazado: ${event.cause ?: "sin detalles"}",
+                    kind = RealtimeMessageKind.Error
+                ),
+                SaleRealtimeCommand.PushNotification(
+                    title = "Pedido con incidencia",
+                    body = "Revisa el pedido ${event.saleId}"
+                )
+            )
+        }
+    }
+}
+```
+
+### `UpdateSaleVerificationFromRealtimeCaseUse`
+
+Applies the verification outcome from a realtime event to the local repository. Reads the current sale, maps `isSuccess` to `BuyState.VERIFIED` or `BuyState.DELETED`, and only persists if the state actually changes.
+
+```kotlin
+class UpdateSaleVerificationFromRealtimeCaseUse(
+    private val repository: SaleRepository
+) {
+    suspend operator fun invoke(
+        saleId: String,
+        isSuccess: Boolean
+    ): Result<Unit> = runCatching {
+        val currentSale = repository.getById(saleId)
+        val nextState = if (isSuccess) BuyState.VERIFIED else BuyState.DELETED
+        if (currentSale.verified == nextState) return@runCatching
+
+        repository.save(currentSale.copy(verified = nextState))
+    }
+}
+```
+
+---
+
+## Koin DI Module
+
+`SharedSaleFeatureModule` is a Kotlin `object` that serves as a logical grouping anchor for Koin bindings in each consuming app module.
+
+```kotlin
+package com.elitec.shared.sale.feature.sale.di
+
+object SharedSaleFeatureModule
+```
+
+Concrete bindings — injecting `SaleOfflineFirstRepository`, `SaleNetRepositoryImpl`, `RealtimeSyncGateway`, and all use-case classes — are declared in the `:app` or `:alejotallerscan` DI modules so each surface supplies its own Appwrite client and Room database instances.
+
+---
+
+## Adding to a Gradle Module
+
+`shared-sale` is an Android library. Add it as an `implementation` dependency in any Android module's `build.gradle.kts`:
+
+```kotlin
+// In :app or :alejotallerscan build.gradle.kts
+dependencies {
+    implementation(project(":shared-sale"))
+}
+```
+
+<Note>
+`shared-sale` depends transitively on `project(":shared-core")` and `project(":shared-auth")`, as well as the Appwrite SDK, Ktor, Pusher, and `kotlinx-datetime`. These are brought in automatically. The module requires `minSdk = 26` and compiles against SDK 36 with Java 17 source compatibility.
+</Note>

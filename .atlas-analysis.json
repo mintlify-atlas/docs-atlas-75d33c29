@@ -1,0 +1,123 @@
+{
+  "projectType": "saas",
+  "projectName": "AlejoTaller",
+  "projectDescription": "A full-stack MVP monorepo for managing an electronics store, featuring an Android client app, an Android operator scanner app, a Svelte web client, and a Pusher publisher microservice — all built on an offline-first, real-time architecture backed by Appwrite.",
+  "theme": "palm",
+  "primaryColor": "#3c8c3c",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "architecture",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/appwrite-setup",
+              "configuration/pusher-setup"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Applications",
+        "groups": [
+          {
+            "group": "Android Client",
+            "pages": [
+              "apps/android-client/overview",
+              "apps/android-client/features",
+              "apps/android-client/build-and-run"
+            ]
+          },
+          {
+            "group": "Android Operator",
+            "pages": [
+              "apps/android-operator/overview",
+              "apps/android-operator/features",
+              "apps/android-operator/build-and-run"
+            ]
+          },
+          {
+            "group": "Web Client",
+            "pages": [
+              "apps/web/overview",
+              "apps/web/features",
+              "apps/web/development"
+            ]
+          },
+          {
+            "group": "Publisher Function",
+            "pages": [
+              "apps/publisher/overview",
+              "apps/publisher/api-reference",
+              "apps/publisher/deployment"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Architecture & Modules",
+        "groups": [
+          {
+            "group": "Shared Modules",
+            "pages": [
+              "modules/shared-auth",
+              "modules/shared-sale",
+              "modules/shared-core-data"
+            ]
+          },
+          {
+            "group": "Data & Sync",
+            "pages": [
+              "architecture/offline-first",
+              "architecture/realtime-sync",
+              "architecture/sale-flow"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Offline-first architecture with local persistence (Room on Android, Dexie/IndexedDB on web) and remote reconciliation via Appwrite",
+    "Real-time sale verification events delivered through Pusher, shared between Android client and web client",
+    "Secure Pusher event publishing via a dedicated Node.js/Express microservice (alejo_publisher) that isolates Pusher secrets",
+    "Multi-role support: customer-facing Android and web apps plus an operator Android app with QR scanning and sale confirmation",
+    "Feature-modular architecture (data / domain / presentation) shared across all surfaces through Kotlin shared modules",
+    "Google OAuth and email/password authentication backed by Appwrite",
+    "Product catalog with category filtering, offline browsing, and cart management",
+    "Sale lifecycle management: purchase/reservation → operator verification → real-time status update",
+    "Android APK delivery via GitHub Releases with guided download from the web app"
+  ],
+  "publicApiSurface": [
+    "GET /health — Publisher health check",
+    "POST /sale-verification/publish — Publish sale confirmed/rejected event to Pusher",
+    "BuyState enum: UNVERIFIED | VERIFIED | DELETED",
+    "DeliveryType enum: PICKUP | DELIVERY",
+    "Currency enum: CUP | USD | MLC",
+    "AuthUserCaseUse (shared-auth) — authenticate customer user",
+    "AuthOperatorUserCaseUse (shared-auth) — authenticate operator user",
+    "RegisterNewSaleCauseUse (shared-sale) — register a new sale",
+    "SyncSalesCaseUse (shared-sale) — sync local pending sales with remote",
+    "InterpretSaleRealtimeEventCaseUse (shared-sale) — interpret incoming Pusher events",
+    "UpdateSaleVerificationFromRealtimeCaseUse (shared-sale) — update local sale state from realtime event",
+    "CreateSaleCaseUse (web) — create sale from web client",
+    "GetSalesCaseUse (web) — retrieve sales list",
+    "GetAllProductCaseUse (web) — fetch product catalog",
+    "GetAllCategoriesCaseUse (web) — fetch categories",
+    "OpenSessionCaseUse (web) — open user session",
+    "ExchangeGoogleCredentialCaseUse (web) — exchange Google OAuth credential",
+    "PublishSaleVerificationUseCase (publisher) — orchestrate Pusher publish"
+  ]
+}

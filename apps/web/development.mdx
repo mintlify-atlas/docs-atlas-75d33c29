@@ -1,0 +1,296 @@
+---
+title: "Developing the AlejoTaller Web Client Locally"
+sidebarTitle: "Development"
+description: "Set up and run the AlejoTaller Svelte web client in development mode with Vite, configure environment variables, and understand the feature-first project structure."
+---
+
+The AlejoTaller web client is a Svelte 5 + TypeScript single-page application built with Vite. This page walks through everything needed to run the app locally, configure the required environment variables, and navigate the project structure.
+
+## Prerequisites
+
+Before starting, make sure the following are available in your local environment:
+
+- **Node.js 18+** — required by Vite 8 and the Svelte toolchain
+- **pnpm** (recommended) or npm — pnpm is used throughout the monorepo
+- **A running Appwrite instance** — either self-hosted or Appwrite Cloud, with a project, database, and storage bucket already configured
+- **Pusher credentials** — an app ID, key, secret, and cluster from your Pusher dashboard
+- **Telegram bot** (optional) — required only if the Telegram notifier is active in the current deployment
+
+---
+
+## Local Setup
+
+<Steps>
+  <Step title="Navigate to the web directory">
+    All web client commands run from the `web/` subdirectory of the monorepo root:
+
+    ```bash
+    cd web
+    ```
+  </Step>
+
+  <Step title="Install dependencies">
+    ```bash
+    pnpm install
+    ```
+
+    This installs Svelte, Vite, Dexie, the Appwrite Web SDK, Pusher JS, M3 Svelte, Lucide Svelte, and all development tooling declared in `package.json`.
+  </Step>
+
+  <Step title="Configure environment variables">
+    Copy the example environment file and fill in all `VITE_` variables:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    The complete set of variables read by `src/core/infrastructure/env.ts`:
+
+    ```env
+    # Appwrite
+    VITE_APPWRITE_ENDPOINT=https://your-appwrite-instance/v1
+    VITE_APPWRITE_PROJECT_ID=your_project_id
+    VITE_APPWRITE_DATABASE_ID=your_database_id
+    VITE_APPWRITE_USERS_FUNCTION=your_users_function_id
+    VITE_APPWRITE_STORAGE_BUCKET_ID=your_bucket_id
+    VITE_APPWRITE_CONSOLE_URL=https://your-appwrite-instance
+
+    # Google OAuth
+    VITE_GOOGLE_CLIENT_ID=your_google_client_id
+    VITE_GOOGLE_AUTH_URL=https://accounts.google.com/o/oauth2/auth
+
+    # Password reset redirect
+    VITE_PASSWORD_RESET_URL=https://your-domain.com/reset-password
+
+    # Pusher
+    VITE_PUSHER_APP_ID=your_app_id
+    VITE_PUSHER_KEY=your_pusher_key
+    VITE_PUSHER_SECRETS=your_pusher_secret
+    VITE_PUSHER_CLUSTER=your_cluster
+    VITE_PUSHER_SUPPORT_CHANNEL=support-channel-name
+    VITE_PUSHER_PROMO_CHANNEL=promo-channel-name
+    VITE_PUSHER_NOTIFICATION_CHANNEL=notification-channel-name
+    VITE_PUSHER_IA_CHANNEL=ia-channel-name
+
+    # Telegram notifier
+    VITE_TELEGRAM_API_URL=https://api.telegram.org
+    VITE_TELEGRAM_BOT_KEY=your_bot_key
+    VITE_TELEGRAM_CHAT_ID=your_chat_id
+
+    # APK download links
+    VITE_CLIENT_ANDROID_APK_URL=https://github.com/.../releases/download/.../client.apk
+    VITE_OPERATOR_ANDROID_APK_URL=https://github.com/.../releases/download/.../operator.apk
+    VITE_GITHUB_RELEASES_URL=https://github.com/your-org/repo/releases
+
+    # Exchange rates
+    VITE_EL_TOQUE_API_KEY=your_el_toque_key
+    VITE_EL_TOQUE_API_URL=https://api.eltoque.com
+    VITE_DIRECTORIOCUBO_API_URL=https://api.directoriocubano.info
+
+    # Alset Pulse (support service)
+    VITE_ALSET_PULSE_BASE_URL=https://your-pulse-service.com
+    VITE_ALSET_PULSE_API_KEY=your_pulse_api_key
+    VITE_ALSET_PULSE_SUPPORT_MESSAGES_PATH=/support/messages
+
+    # Infra dashboard links
+    VITE_INFRA_STATUS_URL=https://your-status-page.com
+    VITE_RENDER_CONSOLE_URL=https://dashboard.render.com
+    VITE_CLOUDFLARE_CONSOLE_URL=https://dash.cloudflare.com
+    VITE_ADMIN_DASHBOARD_URL=https://your-admin-dashboard.com
+    ```
+
+    See the [Environment Variables reference](/configuration/environment-variables) for descriptions of each variable.
+
+    <Warning>
+      `VITE_APPWRITE_ENDPOINT` and `VITE_APPWRITE_PROJECT_ID` are required at startup. If either is missing, `appwrite.config.ts` will emit a warning and the Appwrite client will not be configured, causing all backend-dependent features to fail silently.
+    </Warning>
+  </Step>
+
+  <Step title="Start the development server">
+    ```bash
+    pnpm dev
+    ```
+
+    Vite starts the development server with hot module replacement at:
+
+    **[http://localhost:5173](http://localhost:5173)**
+
+    The dev server also enables the `DevTerminal` component (a debug overlay) and activates console logging for navigation and session events that are stripped from production builds.
+  </Step>
+
+  <Step title="Type-check the project">
+    Run `svelte-check` together with the TypeScript compiler to catch type errors across `.svelte` and `.ts` files:
+
+    ```bash
+    npm run -s check
+    ```
+
+    This runs `svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json` and reports any type mismatches without emitting build output.
+  </Step>
+
+  <Step title="Build for production">
+    ```bash
+    pnpm build
+    ```
+
+    Vite bundles the application into `dist/`. All `import.meta.env.DEV` branches (debug logging, `DevTerminal`) are tree-shaken out of the production bundle.
+  </Step>
+
+  <Step title="Preview the production build">
+    ```bash
+    pnpm preview
+    ```
+
+    Serves the `dist/` directory locally so the production bundle can be verified before deployment.
+  </Step>
+</Steps>
+
+---
+
+## Project Structure
+
+All application source lives under `web/src/`:
+
+```
+web/src/
+├── App.svelte                        # Root application component
+├── main.ts                           # Entry point — mounts App.svelte
+├── app.css                           # Global styles
+├── lib/
+│   ├── core/                         # Shared internal utilities
+│   ├── motion/                       # Animation primitives
+│   └── navigation/                   # Custom navigation components
+└── core/
+    ├── feature/
+    │   ├── auth/                     # Auth, session, user management
+    │   ├── product/                  # Product catalog + offline cache
+    │   ├── category/                 # Category taxonomy
+    │   ├── sale/                     # Cart, sales, real-time verification
+    │   ├── exchange/                 # Currency exchange rates
+    │   ├── notification/             # Promotions and announcements
+    │   ├── support/                  # Customer support messaging
+    │   └── settings/                 # Application settings
+    └── infrastructure/
+        ├── env.ts                    # Typed access to all VITE_ variables
+        ├── di/
+        │   ├── appwrite.config.ts    # Appwrite SDK initialization
+        │   ├── dexie.db.ts           # Dexie IndexedDB database instance
+        │   ├── auth.service.ts       # Auth service wrapper
+        │   └── infrastructure.container.ts  # DI composition root
+        └── presentation/
+            ├── navigation/           # Routing and deep-link handling
+            ├── components/           # Shared UI (ToastHost, DevTerminal)
+            └── util/                 # Console interceptor and helpers
+```
+
+### Feature module layout
+
+Each feature follows the same internal structure:
+
+```
+core/feature/{name}/
+├── data/
+│   ├── dto/          # Appwrite document shape
+│   ├── mapper/       # DTO ↔ domain entity conversions
+│   └── repository/   # Concrete repository implementations
+├── domain/
+│   ├── caseuse/      # One class per user action
+│   ├── entity/       # Domain model and enums
+│   └── repository/   # Repository interfaces (contracts)
+├── di/               # Feature-level dependency wiring
+└── presentation/
+    └── viewmodel/    # Svelte stores exposing UI state
+```
+
+---
+
+## Dexie IndexedDB Configuration
+
+`dexie.db.ts` defines the `AppDatabase` class and its versioned schema. The current schema (version 3) stores five tables:
+
+```typescript
+// dexie.db.ts — AppDatabase (version 3)
+this.version(3).stores({
+    products:      "$id, name, categoryId",
+    categories:    "$id, name",
+    promotions:    "$id, validUntilEpochMillis",
+    sales:         "$id, user_id, buy_state",
+    exchangeRates: "id, updatedAt, source"
+})
+```
+
+The exported singleton `db` is imported by repository implementations across all features. Dexie migrations are handled automatically: adding a version with `.stores()` upgrades the schema non-destructively on the client's browser.
+
+---
+
+## Appwrite SDK Configuration
+
+`appwrite.config.ts` initializes the Appwrite `Client` and exports the individual service instances used throughout the app:
+
+```typescript
+// appwrite.config.ts
+import { Client, Databases, Storage, Account, Functions } from "appwrite"
+import { ENV } from "../env";
+
+const client = new Client()
+
+if (ENV.appwriteEndpoint && ENV.appwriteProjectId) {
+    client
+        .setEndpoint(ENV.appwriteEndpoint)
+        .setProject(ENV.appwriteProjectId)
+}
+
+export const databases = new Databases(client)
+export const storage   = new Storage(client)
+export const account   = new Account(client)
+export const functions = new Functions(client)
+export { client }
+```
+
+Feature repositories import the specific service they need (`databases`, `storage`, `account`, or `functions`) rather than the raw `client`, keeping coupling minimal.
+
+---
+
+## DI Composition Root
+
+<Tip>
+  `infrastructure.container.ts` is the single composition root for infrastructure dependencies. Feature DI modules import from this container to wire use cases with their concrete repository implementations, keeping the rest of the codebase free of direct imports from `appwrite.config.ts` or `dexie.db.ts`.
+</Tip>
+
+```typescript
+// infrastructure.container.ts
+export const infrastructureContainer = {
+    appwrite: {
+        client,
+        databases,
+        storage,
+        account,
+        functions,
+    },
+    auth: authService,
+    database: db
+}
+```
+
+---
+
+## Running Tests
+
+The web client uses Vitest for unit testing:
+
+```bash
+# Run all tests once
+pnpm test
+
+# Run tests in watch mode
+pnpm test:unit:watch
+
+# Generate coverage report
+pnpm test:coverage
+```
+
+---
+
+<Note>
+  The `web/` directory is a standalone Node.js package with its own `package.json`. It is not part of a pnpm workspace shared with other directories in the monorepo — the Android modules use Gradle and the `alejo_publisher` function has its own `package.json`. Run all web commands from inside `web/`, not from the monorepo root.
+</Note>

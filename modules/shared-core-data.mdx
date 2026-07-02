@@ -1,0 +1,490 @@
+---
+title: "shared-core and shared-data: Cross-Cutting Android Modules"
+sidebarTitle: "shared-core & shared-data"
+description: "shared-core provides cross-cutting utilities and domain rules while shared-data supplies DTOs, mappers, and repository infrastructure used across all AlejoTaller Android surfaces."
+---
+
+`shared-core` and `shared-data` form the infrastructure foundation of the AlejoTaller monorepo. `shared-core` is the thinnest layer — a pure Android library exposing only cross-cutting domain primitives that any feature module can import without pulling in persistence or network code. `shared-data` builds on top of it (and on `shared-auth` and `shared-sale`) to provide concrete persistence, mapping, and remote-sync implementations backed by Room, Appwrite, and Pusher. A third companion module, `mapper-processor`, contributes a KSP annotation processor that can generate boilerplate `toDomain` / `toDto` mapping extension functions at compile time.
+
+<Note>
+All three modules are Android libraries (they apply `com.android.library` or `java-library`). `shared-core` and `shared-data` require an Android build environment — they cannot run as standalone JVM modules. Both target `minSdk = 26` and compile against SDK 36 with Java 17 source compatibility.
+</Note>
+
+---
+
+## `shared-core`
+
+`shared-core` is intentionally minimal. It declares the types and rules that every other module in the monorepo may need, so keeping it free of infrastructure dependencies prevents circular dependency chains.
+
+### Contents
+
+#### `Promotion` entity
+
+The only domain entity currently in `shared-core`. It models a time-bounded promotional offer and is used by the realtime subscription layer in `shared-sale` (the `SubscribeRealtimeSyncCaseUse.onPromotion` callback carries a `Promotion`).
+
+```kotlin
+data class Promotion(
+    val id: String,
+    val title: String,
+    val message: String,
+    val imageUrl: String?,
+    val oldPrice: Double? = null,
+    val currentPrice: Double? = null,
+    val validFromEpochMillis: Long,
+    val validUntilEpochMillis: Long
+) {
+    fun isActive(nowEpochMillis: Long): Boolean =
+        nowEpochMillis in validFromEpochMillis..validUntilEpochMillis
+}
+```
+
+`isActive` uses Kotlin's range `in` operator so callers never have to write boundary comparisons manually.
+
+#### `SharedCoreModuleMarker`
+
+A singleton object used as a Koin or DI grouping marker, following the same pattern as `SharedAuthFeatureModule` and `SharedSaleFeatureModule`.
+
+```kotlin
+object SharedCoreModuleMarker
+```
+
+### Unit Tests
+
+`PromotionTest` verifies the `isActive` boundary conditions — both inclusive boundaries (`100L` and `200L`) return `true`, while values just outside (`99L`, `201L`) return `false`.
+
+```kotlin
+@Test
+fun `isActive devuelve true dentro del rango`() {
+    val promotion = Promotion(
+        id = "promo-1", title = "Promo", message = "Activa",
+        imageUrl = null,
+        validFromEpochMillis = 100L,
+        validUntilEpochMillis = 200L
+    )
+
+    assertTrue(promotion.isActive(100L))
+    assertTrue(promotion.isActive(150L))
+    assertTrue(promotion.isActive(200L))
+}
+
+@Test
+fun `isActive devuelve false fuera del rango`() {
+    // ...
+    assertFalse(promotion.isActive(99L))
+    assertFalse(promotion.isActive(201L))
+}
+```
+
+### Gradle
+
+```kotlin
+// shared-core/build.gradle.kts
+plugins {
+    alias(libs.plugins.android.library)
+}
+
+android {
+    namespace = "com.elitec.shared.core"
+    compileSdk = 36
+    defaultConfig { minSdk = 26 }
+}
+
+dependencies {
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.kotlinx.datetime)
+    testImplementation(libs.junit)
+}
+```
+
+---
+
+## `shared-data`
+
+`shared-data` is the persistence and mapping layer. It depends on all three other shared modules and provides the concrete implementations of the repository and session-manager interfaces that are defined as abstractions in `shared-auth` and `shared-sale`.
+
+### Auth Data Layer
+
+#### `UserDto`
+
+The serializable flat representation of an Appwrite user used for local caching and mapping.
+
+```kotlin
+@Serializable
+data class UserDto(
+    val id: String,
+    val name: String,
+    val email: String,
+    val pass: String,
+    val sub: String,
+    val phone: String? = "",
+    val photoUrl: String? = "",
+    val verification: Boolean = false,
+    val role: String? = null
+)
+```
+
+#### `AppwriteUser.toDto()` mapper
+
+Converts the raw Appwrite `User<Map<String, Any>>` to `UserDto`. Role resolution walks the Appwrite labels list first, then falls back to the `prefs.data["role"]` preference key, normalizing to lowercase.
+
+```kotlin
+fun User<Map<String, Any>>.toDto(): UserDto =
+    let { currentUser ->
+        val labels = currentUser.labels.map { it.trim().lowercase() }
+        val roleFromLabels = when {
+            "owner" in labels          -> "owner"
+            "administrator" in labels  -> "administrator"
+            "admin" in labels          -> "admin"
+            "operator" in labels       -> "operator"
+            else                       -> null
+        }
+        UserDto(
+            id          = currentUser.id,
+            name        = currentUser.name,
+            email       = currentUser.email,
+            pass        = currentUser.password ?: "",
+            sub         = (currentUser.prefs.data["sub"] as? String) ?: "",
+            phone       = (currentUser.prefs.data["phone"] as? String) ?: "",
+            photoUrl    = (currentUser.prefs.data["photoUrl"] as? String)
+                            ?: (currentUser.prefs.data["photo_url"] as? String)
+                            ?: (currentUser.prefs.data["avatarUrl"] as? String)
+                            ?: "",
+            verification = (currentUser.prefs.data["verification"] as? Boolean) ?: false,
+            role        = ((currentUser.prefs.data["role"] as? String)?.trim())
+                            .takeUnless { it.isNullOrEmpty() } ?: roleFromLabels
+        )
+    }
+```
+
+#### `UserDto.toDomain()` mapper
+
+Maps the flat DTO back to the `User` + `UserProfile` domain aggregate.
+
+```kotlin
+fun UserDto.toDomain(): User {
+    val profile = UserProfile(
+        sub = sub, phone = phone, photoUrl = photoUrl,
+        verification = verification, role = role
+    )
+    return User(id = id, name = name, email = email, pass = pass, userProfile = profile)
+}
+```
+
+#### `AccountRepositoryImpl`
+
+The concrete implementation of the `AccountRepository` interface from `shared-auth`. Calls `account.get()` (Appwrite SDK), converts to DTO, then to domain.
+
+```kotlin
+class AccountRepositoryImpl(
+    private val account: Account
+) : AccountRepository {
+    override suspend fun getCurrentUserInfo(): User {
+        val currentUser = account.get().toDto()
+        return currentUser.toDomain()
+    }
+}
+```
+
+#### `AppwriteSessionManager`
+
+The concrete `SessionManager` implementation. Handles the edge case where an existing active session is already open by deleting it before creating a new one.
+
+```kotlin
+class AppwriteSessionManager(
+    private val account: Account
+) : SessionManager {
+
+    override suspend fun openEmailSession(email: String, password: String): String {
+        return try {
+            account.createEmailPasswordSession(email, password).userId
+        } catch (e: Exception) {
+            if (e !is AppwriteException) throw e
+            val isActiveSessionError =
+                e.message?.contains("session", ignoreCase = true) == true &&
+                (e.message?.contains("active", ignoreCase = true) == true ||
+                 e.message?.contains("already", ignoreCase = true) == true)
+            if (!isActiveSessionError) throw e
+            runCatching { account.deleteSession("current") }
+            account.createEmailPasswordSession(email, password).userId
+        }
+    }
+
+    override suspend fun isAnySessionAlive(): Boolean =
+        runCatching { account.listSessions().sessions.isNotEmpty() }.getOrDefault(false)
+
+    override suspend fun closeCurrentSession() {
+        account.deleteSession("current")
+    }
+}
+```
+
+### Sale Data Layer
+
+#### `SaleDto`
+
+Room `@Entity` and `@Serializable` DTO for a sale. Enum fields are stored as strings and parsed back via helper extension functions (`toBuyState()`, `toCurrency()`, `toDeliveryType()`).
+
+```kotlin
+@Entity
+@Serializable
+data class SaleDto(
+    @PrimaryKey val id: String,
+    val date: LocalDate,
+    val amount: Double,
+    val currency: String,
+    val verified: String,
+    val products: List<SaleItem>,
+    @SerialName("user_id")   val userId: String,
+    @SerialName("customer_name") val customerName: String? = null,
+    @SerialName("delivery_type") val deliveryType: String? = null,
+    @SerialName("delivery_address") val deliveryAddress: String? = null
+)
+```
+
+#### `SaleDao`
+
+Room DAO exposing reactive (`Flow`) and suspending queries, plus a transactional `replaceAll` for full sync operations.
+
+```kotlin
+@Dao
+interface SaleDao {
+    @Query("SELECT * FROM saledto")
+    fun getAllFlow(): Flow<List<SaleDto>>
+
+    @Query("SELECT * FROM saledto")
+    fun getAll(): List<SaleDto>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(items: List<SaleDto>)
+
+    @Transaction
+    suspend fun replaceAll(sales: List<SaleDto>) {
+        deleteAll()
+        insertAll(sales)
+    }
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(items: SaleDto)
+
+    @Query("SELECT * FROM saledto WHERE id = :id")
+    suspend fun getById(id: String): SaleDto
+
+    @Query("DELETE FROM saledto WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM saledto")
+    suspend fun deleteAll()
+}
+```
+
+#### Sale Mappers
+
+Three extension-function files handle the full mapping chain:
+
+| File | Direction |
+|---|---|
+| `Document<Map<String,Any>>.toSaleDto()` | Appwrite document → `SaleDto` |
+| `Sale.toDto()` | Domain `Sale` → `SaleDto` |
+| `SaleDto.toDomain()` | `SaleDto` → Domain `Sale` |
+
+The `Document.toSaleDto()` mapper is defensive: it handles multiple historical field names (`buy_state` / `verified`, various product JSON shapes), and falls back gracefully to `UNVERIFIED` or empty lists rather than throwing.
+
+#### `SaleOfflineFirstRepository`
+
+The concrete `SaleRepository` implementation. Writes go to Room first, then attempt a remote push (with up to three retries). The `sync(userId)` method resolves the pending queue by diffing local sales against the remote collection, pushing any that are missing remotely, then replacing the local store with the reconciled result.
+
+```kotlin
+class SaleOfflineFirstRepository(
+    private val net: SaleNetRepository,
+    private val bd: SaleDao
+) : SaleRepository {
+    override fun observeAll(): Flow<List<Sale>> =
+        bd.getAllFlow().map { list -> list.map { it.toDomain() } }
+
+    override suspend fun getById(itemId: String): Sale =
+        bd.getById(itemId).toDomain()
+
+    override suspend fun save(item: Sale) {
+        bd.insert(item.toDto())
+        runCatching { pushWithRetry(net, item.toDto()) }
+    }
+
+    override suspend fun sync(userId: String): Result<Unit> = runCatching {
+        // 1. Diff local vs remote to find pending uploads
+        // 2. Push pending with retry (up to MAX_SYNC_RETRIES = 3)
+        // 3. Fetch fresh remote list and merge with any failed uploads
+        // 4. Replace local store with merged result
+    }
+}
+```
+
+#### `SaleNetRepositoryImpl`
+
+Wraps Appwrite `Databases` for remote CRUD. The `search` method fetches with a limit and filters in-memory (by `SALE_ID`, `USER_ID`, `CUSTOMER_NAME`, or `DATE`). The `upsert` method calls `updateDocument`; `save` calls `createDocument` with `ID.unique()` as fallback.
+
+#### `SaleRemoteConfig`
+
+A plain data class that holds the Appwrite database and collection IDs so they are never hard-coded in repository code.
+
+```kotlin
+data class SaleRemoteConfig(
+    val databaseId: String,
+    val saleCollectionId: String
+)
+```
+
+### Room Type Converters
+
+`shared-data` registers two Room `TypeConverter` classes so that `kotlinx-datetime` types and `List<SaleItem>` serialize cleanly to `TEXT` columns.
+
+```kotlin
+class DateTimeConverter {
+    @TypeConverter fun fromLocalDate(value: LocalDate?): String? = value?.toString()
+    @TypeConverter fun toLocalDate(value: String?): LocalDate? = value?.let { LocalDate.parse(it) }
+    // also handles LocalDateTime
+}
+
+class ListConverter {
+    @TypeConverter fun fromSaleItemList(value: List<SaleItem>?): String? =
+        value?.let { Json.encodeToString(it) }
+    @TypeConverter fun toSaleItemList(value: String?): List<SaleItem>? =
+        value?.let { Json.decodeFromString<List<SaleItem>>(it) }
+}
+```
+
+### Mapper Tests
+
+`UserMapperTest` verifies that `UserDto.toDomain()` preserves key profile fields (id, name, role, photoUrl). `SaleMapperTest` covers three scenarios:
+
+- `toDomain` decodes a valid `DeliveryAddress` JSON string correctly.
+- `toDomain` leaves `deliveryAddress` as `null` when the JSON is malformed.
+- `toDto` round-trips a `DeliveryAddress` through serialization without data loss.
+
+### Gradle
+
+```kotlin
+// shared-data/build.gradle.kts
+plugins {
+    alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlinSerialization)
+    alias(libs.plugins.devtools.ksp)
+    alias(libs.plugins.androidx.room)
+}
+
+dependencies {
+    implementation(project(":shared-core"))
+    implementation(project(":shared-auth"))
+    implementation(project(":shared-sale"))
+
+    implementation(libs.sdk.for1.android)   // Appwrite
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    implementation(libs.pusher.java.client)
+    implementation(libs.koin.android)
+    implementation(libs.kotlinx.datetime)
+    // Ktor client stack for network calls
+    implementation(libs.ktor.client.core)
+    implementation(libs.ktor.client.android)
+    // ...
+
+    ksp(libs.room.compiler)
+}
+
+room {
+    schemaDirectory("$projectDir/schemas")
+}
+```
+
+---
+
+## `mapper-processor`
+
+`mapper-processor` is a pure JVM library (no Android plugin) that provides a KSP `SymbolProcessor`. It reads classes annotated with `@AutoMapper(domain = "fully.qualified.DomainClass")` and generates a pair of extension functions — `toDomain()` and `toDto()` — at compile time, eliminating repetitive mapping boilerplate for DTOs whose fields align exactly (or can be aliased via `renames`) with their domain counterparts.
+
+### How It Works
+
+`AutoMapperProcessor` implements KSP's `SymbolProcessor`:
+
+1. **Discovers** all classes annotated with `@com.elitec.alejotaller.infraestructure.mapper.AutoMapper`.
+2. **Resolves** the target domain class from the annotation's `domain` string argument.
+3. **Validates** that property names and types match (after applying any `renames`). Reports a KSP compile error if they do not.
+4. **Generates** a `FileSpec` using KotlinPoet with `toDomain()` and `toDto()` extension functions and writes it via `CodeGenerator`.
+
+```kotlin
+class AutoMapperProcessor(
+    private val codeGenerator: CodeGenerator,
+    private val logger: KSPLogger
+) : SymbolProcessor {
+    override fun process(resolver: Resolver): List<KSAnnotated> {
+        val annotationName = "com.elitec.alejotaller.infraestructure.mapper.AutoMapper"
+        val symbols = resolver.getSymbolsWithAnnotation(annotationName)
+        // For each annotated DTO class:
+        //   1. Resolve domain class from annotation argument
+        //   2. Compare property names and types (with renames map)
+        //   3. Generate toDomain() and toDto() via KotlinPoet
+        //   4. Write via codeGenerator
+        // ...
+    }
+}
+```
+
+`AutoMapperProcessorProvider` is registered via the standard KSP `META-INF/services` mechanism:
+
+```
+META-INF/services/com.google.devtools.ksp.processing.SymbolProcessorProvider
+  → com.elitec.mapper_processor.mapper.AutoMapperProcessorProvider
+```
+
+### Gradle
+
+```kotlin
+// mapper-processor/build.gradle.kts
+plugins {
+    id("java-library")
+    alias(libs.plugins.jetbrains.kotlin.jvm)
+}
+
+dependencies {
+    implementation("com.google.devtools.ksp:symbol-processing-api:2.3.4")
+    implementation(libs.kotlinpoet)
+    implementation(libs.kotlinpoet.ksp)
+}
+```
+
+<Tip>
+Consuming modules that want auto-generated mappers add `ksp(project(":mapper-processor"))` to their `dependencies` block alongside the normal KSP Room compiler entry.
+</Tip>
+
+---
+
+## How the Three Modules Relate
+
+```
+shared-core          ← pure primitives, no infra deps
+    ↑
+shared-auth          ← auth domain (interfaces + use cases)
+shared-sale          ← sale domain (interfaces + use cases)
+    ↑
+shared-data          ← Room, Appwrite, Pusher, mappers, repo impls
+    ↑
+:app / :alejotallerscan  ← DI wiring, ViewModels, UI
+```
+
+`shared-core` sits at the bottom of the dependency graph. `shared-auth` and `shared-sale` each depend on it. `shared-data` depends on all three shared libraries and provides every concrete infrastructure class. App-level modules consume all four shared libraries and provide Koin modules that wire implementations to the domain interfaces.
+
+## Adding to a Gradle Module
+
+```kotlin
+// In :app or :alejotallerscan build.gradle.kts
+dependencies {
+    // Core primitives (Promotion entity, SharedCoreModuleMarker)
+    implementation(project(":shared-core"))
+
+    // Infrastructure implementations (Room, Appwrite, mappers)
+    implementation(project(":shared-data"))
+
+    // Optional: KSP mapper code generation
+    ksp(project(":mapper-processor"))
+}
+```

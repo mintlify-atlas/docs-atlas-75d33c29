@@ -1,0 +1,206 @@
+---
+title: "Configuring Pusher Channels for AlejoTaller"
+sidebarTitle: "Pusher Setup"
+description: "Create and configure the Pusher Channels app used by AlejoTaller for real-time sale verification events and support, promo, and notification channels."
+---
+
+AlejoTaller uses Pusher Channels as its real-time event bus. When an operator confirms or rejects a customer sale, the operator Android app updates Appwrite and then calls the `alejo_publisher` microservice, which signs and triggers a Pusher event on a per-user channel. Both the client Android app and the Svelte web client subscribe to that channel and update their UI instantly — without polling. This page explains how to create and wire up the Pusher app that powers this flow.
+
+## Why Pusher (and Not Direct Client Triggering)
+
+Pusher's server-side trigger API requires an **app secret**, which must never be bundled inside a mobile APK or a client-side JavaScript bundle. AlejoTaller solves this by routing all publish calls through the `alejo_publisher` microservice:
+
+1. The operator app calls `POST /sale-verification/publish` on the publisher (authenticated with a Bearer token).
+2. The publisher holds the Pusher secret server-side and signs the trigger request.
+3. Pusher delivers the event to all subscribed clients.
+
+This design keeps the Pusher secret out of the APK, eliminates clock-skew signature failures from mobile devices, and provides a single auditable place for all real-time publish operations.
+
+<Warning>
+Never put `PUSHER_SECRET` (or `VITE_PUSHER_SECRETS`) directly in client-side code or commit it to a public repository. Always trigger events through the `alejo_publisher` microservice. See [apps/publisher/overview](/apps/publisher/overview) for the full microservice documentation.
+</Warning>
+
+---
+
+## Setup Steps
+
+<Steps>
+
+### Create a Pusher account and new app
+
+1. Sign up or log in at [pusher.com](https://pusher.com).
+2. In the Pusher dashboard, click **Create app**.
+3. Give it a descriptive name (e.g. `alejo-taller-prod`).
+4. Choose **Channels** as the product type.
+
+### Choose your cluster
+
+Select the cluster closest to your users. For AlejoTaller's primary market in Latin America, **`mt1` (US East / Miami)** offers the lowest latency.
+
+<Note>
+The cluster value must be identical in every place it appears: `PUSHER_CLUSTER` in the publisher `.env`, `VITE_PUSHER_CLUSTER` in the web `.env`, and `PUSHER_CLUSTER` in Android `local.properties`. A mismatch will cause subscription failures.
+</Note>
+
+### Note your app credentials
+
+After creating the app, go to **App Keys**. You will see four values:
+
+| Credential | Environment variable (publisher) | Environment variable (web) | Android key |
+|---|---|---|---|
+| App ID | `PUSHER_APP_ID` | `VITE_PUSHER_APP_ID` | `PUSHER_APP_ID` |
+| Key | `PUSHER_KEY` | `VITE_PUSHER_KEY` | `PUSHER_API_KEY` |
+| Secret | `PUSHER_SECRET` | `VITE_PUSHER_SECRETS` ⚠️ | `PUSHER_API_SECRETS` |
+| Cluster | `PUSHER_CLUSTER` | `VITE_PUSHER_CLUSTER` | `PUSHER_CLUSTER` |
+
+The **Key** is public and safe to ship in the browser bundle and APK. The **Secret** must only live in server-side environments.
+
+### Configure allowed origins (optional)
+
+In the Pusher dashboard under **App Settings**, you can restrict which origins are allowed to connect. Set this to your production web domain (e.g. `https://alejotaller.onrender.com`) to prevent unauthorized subscriptions.
+
+For the `alejo_publisher` microservice, configure the `ALLOW_ORIGIN` environment variable to your web client's domain so the Express CORS middleware only accepts requests from trusted origins.
+
+### Add credentials to the web client
+
+Create or update `web/.env`:
+
+```env
+VITE_PUSHER_APP_ID=<your-app-id>
+VITE_PUSHER_KEY=<your-pusher-key>
+VITE_PUSHER_CLUSTER=mt1
+# Named channels — choose names that match across all surfaces
+VITE_PUSHER_SUPPORT_CHANNEL=support-channel
+VITE_PUSHER_PROMO_CHANNEL=promo-channel
+VITE_PUSHER_NOTIFICATION_CHANNEL=notification-channel
+VITE_PUSHER_IA_CHANNEL=ia-channel
+```
+
+### Add credentials to the publisher microservice
+
+Create or update `function/alejo_publisher/.env`:
+
+```env
+PUSHER_APP_ID=<your-app-id>
+PUSHER_KEY=<your-pusher-key>
+PUSHER_SECRET=<your-pusher-secret>
+PUSHER_CLUSTER=mt1
+```
+
+### Add credentials to Android local.properties
+
+Add the following to `local.properties` at the repository root:
+
+```properties
+PUSHER_APP_ID=<your-app-id>
+PUSHER_API_KEY=<your-pusher-key>
+PUSHER_API_SECRETS=<your-pusher-secret>
+PUSHER_CLUSTER=mt1
+PUSHER_SALE_CHANNEL=sale-verification-
+PUSHER_SUPPORT_CHANNEL=support-channel
+PUSHER_PROMO_CHANNEL=promo-channel
+PUSHER_NOTIFICATION_CHANNEL=notification-channel
+PUSHER_IA_CHANNEL=ia-channel
+```
+
+These values are injected into `BuildConfig` at build time by `injectLocalProperties()` in both `app/build.gradle.kts` and `alejotallerscan/build.gradle.kts`.
+
+</Steps>
+
+---
+
+## Channel Naming Conventions
+
+AlejoTaller uses a small set of well-defined channel names. All channel names must be consistent across the publisher, the web client, and the two Android apps.
+
+### Sale Verification Channel
+
+```
+sale-verification-{userId}
+```
+
+This is a **per-user, dynamic channel**. The channel name is constructed at publish time by appending the Appwrite user ID to the `sale-verification-` prefix:
+
+```typescript
+// PusherSaleRealtimePublisher.ts
+const channel = `sale-verification-${command.userId}`;
+```
+
+The client app and web client subscribe to this channel after submitting a purchase and wait for an operator decision event. The channel is naturally isolated: only events for a specific user's sale reach their device.
+
+### Named Broadcast Channels
+
+These channels carry application-wide events and are configured by name in the environment variables. The channel names are arbitrary strings — what matters is that the publisher and all subscribers use the same value.
+
+| Channel Variable | Purpose |
+|---|---|
+| `VITE_PUSHER_SUPPORT_CHANNEL` | Customer support messages and operator responses. |
+| `VITE_PUSHER_PROMO_CHANNEL` | Promotional broadcasts pushed to all connected clients. |
+| `VITE_PUSHER_NOTIFICATION_CHANNEL` | General in-app notifications (e.g. stock updates, announcements). |
+| `VITE_PUSHER_IA_CHANNEL` | Reserved for AI-driven interaction events. |
+
+---
+
+## Events Reference
+
+### `sale-verification-{userId}` channel
+
+| Event | Trigger | Payload fields |
+|---|---|---|
+| `sale:confirmed` | Operator approves the sale. | `saleId`, `userId`, `decision`, `timestamp`, `amount`, `productCount`, `type`, `cause` |
+| `sale:rejected` | Operator rejects the sale. | `saleId`, `userId`, `decision`, `timestamp`, `amount`, `productCount`, `type`, `cause` |
+
+The `decision` field in the payload mirrors the event name (`confirmed` or `rejected`). The `cause` field is `null` for confirmations and may contain a rejection reason string for rejections.
+
+A typical confirmed-sale payload looks like this:
+
+```json
+{
+  "saleId": "69c9593b002b167bf4fb",
+  "userId": "698f82750024bfe2dc52",
+  "decision": "confirmed",
+  "timestamp": "1719936000000",
+  "amount": 20.5,
+  "productCount": 4,
+  "type": "sale:confirmed",
+  "cause": null
+}
+```
+
+---
+
+## Verifying the Integration
+
+Once all credentials are in place, use the Pusher dashboard's **Debug Console** to observe live events:
+
+1. Open the Pusher dashboard for your app and go to **Debug Console**.
+2. Start your local publisher: `cd function/alejo_publisher && npm run dev`.
+3. Send a test publish request:
+
+```bash
+curl -X POST http://localhost:3000/sale-verification/publish \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your-publisher-api-key>" \
+  -d '{
+    "saleId": "test-sale-001",
+    "userId": "test-user-001",
+    "decision": "confirmed",
+    "amount": 15.0,
+    "productCount": 2
+  }'
+```
+
+4. The Debug Console should show the event arriving on channel `sale-verification-test-user-001` with event name `sale:confirmed`.
+
+A successful response from the publisher looks like:
+
+```json
+{
+  "ok": true,
+  "channel": "sale-verification-test-user-001",
+  "eventName": "sale:confirmed"
+}
+```
+
+---
+
+For the complete list of Pusher-related environment variables across all surfaces, see the [Environment Variables Reference](/configuration/environment-variables).

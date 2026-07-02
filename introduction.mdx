@@ -1,0 +1,109 @@
+---
+title: "AlejoTaller: Electronics Store Operations Suite"
+sidebarTitle: "Introduction"
+description: "AlejoTaller is a monorepo MVP for managing an electronics store with Android and web clients, QR-based operator tools, and real-time sale verification via Pusher and Appwrite."
+---
+
+AlejoTaller is a production-grade monorepo that consolidates every surface of a real electronics store operation into a single, coherent codebase. It covers the full commercial loop — customers browse and purchase, operators scan and confirm, and every actor receives real-time feedback — with a shared technical strategy that emphasises local persistence, remote reconciliation, and event-driven state propagation.
+
+<Note>
+  AlejoTaller is an **active MVP with known technical debt**. The security model for `alejo_publisher` still uses a simple MVP API key, several Appwrite operations are still performed from client surfaces, and automated test coverage is not yet uniform across all layers. These gaps are tracked and addressed in the V2 and V3 roadmap cores described below.
+</Note>
+
+## What AlejoTaller Does
+
+The product solves a concrete operations problem: an electronics workshop/store needs a reliable way for clients to place purchases and reservations, for operators to scan and validate those orders on-site, and for all parties to see the result the moment the decision is made — even when network conditions are unreliable.
+
+The system achieves this by combining offline-first persistence on every client surface with a lightweight microservice that pushes verified events to all subscribers through Pusher channels, keeping Android and web clients in sync without polling.
+
+## The Four Surfaces
+
+| Surface | Module | Role |
+|---|---|---|
+| Android client | `app/` | Customer-facing purchase and reservation experience |
+| Android operator | `alejotallerscan/` | QR scanning, sale confirmation and rejection, operator history |
+| Svelte web client | `web/` | Browser-based purchase and reservation with APK download guidance |
+| Publisher microservice | `function/alejo_publisher/` | Secure Pusher event relay for `sale:confirmed` and `sale:rejected` |
+
+### Android Client (`app`)
+
+The customer-facing Android application handles authentication, catalogue browsing, and the full purchase and reservation flow. It persists orders locally with Room for continuity when connectivity is poor, and subscribes to Pusher events so the UI reconciles automatically once an operator confirms or rejects a sale.
+
+### Android Operator — AlejoTallerScan (`alejotallerscan`)
+
+The operator application gives store staff a fast QR scanning workflow using CameraX and ML Kit. Operators can verify or reject reservations, view a local internal history, and sync pending decisions once connectivity is restored. Local notifications alert the operator when a peer has already processed a reservation.
+
+### Svelte Web Client (`web`)
+
+The web client mirrors the Android client's commercial experience in a browser. It stores data in IndexedDB via Dexie for offline resilience, subscribes to the same Pusher channels as the Android client, and provides a guided flow for downloading the Android APK from GitHub Releases.
+
+### Publisher Microservice (`function/alejo_publisher`)
+
+`alejo_publisher` is a minimal Node/TypeScript/Express HTTP service with two endpoints: `GET /health` and `POST /sale-verification/publish`. Its only job is to receive a validated decision payload from the operator app and publish the corresponding Pusher event — keeping Pusher secrets out of the APK and avoiding timestamp-signing issues that arise from mobile clients.
+
+## Shared Module Strategy
+
+Logic that is critical to more than one surface lives in dedicated Kotlin modules rather than being copied across apps. This prevents the Android client and operator from diverging on business rules as the product evolves.
+
+| Module | Responsibility |
+|---|---|
+| `shared-auth` | Authentication, roles, and operator access contracts |
+| `shared-core` | Cross-cutting rules and commonly reused utilities |
+| `shared-data` | DTOs, mappers, repositories, and persistence/sync support |
+| `shared-sale` | Sale domain — states, entities, and reusable use cases |
+
+A dedicated `mapper-processor` module handles annotation-based mapper processing support shared across the Android surface.
+
+## Key Technology Stack
+
+**Android** — Kotlin, Jetpack Compose, Material 3, Koin, Room, Coroutines, StateFlow, CameraX, ML Kit Barcode Scanning, Appwrite Kotlin SDK, OkHttp
+
+**Web** — Svelte, Vite, TypeScript, Dexie, Appwrite Web SDK, Pusher JS, M3 Svelte, Lucide Svelte
+
+**Backend & infrastructure** — Appwrite, Pusher, Render, GitHub Releases
+
+## MVP Status and Roadmap
+
+AlejoTaller follows a three-core roadmap. The current focus is Core MVP stabilisation.
+
+<Accordion title="Core MVP — Active">
+  **Goal:** stabilise purchase, reservation, verification, and real-time feedback across all surfaces.
+
+  - Close consistency between Android client, Android operator, and web
+  - Ensure traceable deploys and downloadable releases
+  - Consolidate the commercial flow as the primary tested path
+</Accordion>
+
+<Accordion title="Core V2 — Upcoming">
+  **Goal:** harden security and reduce client-side responsibility for sensitive operations.
+
+  - More robust cross-app and cross-role authentication
+  - Improved API key handling or signed tokens for publisher functions
+  - More operations mediated by backend rather than direct client SDK calls
+  - Observability and monitoring improvements
+</Accordion>
+
+<Accordion title="Core V3 — Planned">
+  **Goal:** scale operations and add business analytics.
+
+  - Advanced dashboards and business metrics
+  - Operational audit trails
+  - Greater automation of reconciliation and alerting
+</Accordion>
+
+## Explore the Documentation
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Understand the feature-first layered structure, shared Kotlin modules, and offline-first reconciliation strategy.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Clone the monorepo and run all four surfaces locally in under 15 minutes.
+  </Card>
+  <Card title="Android Client" icon="mobile" href="/apps/android-client/overview">
+    Deep-dive into the customer-facing Android app: catalogue, purchases, and Pusher integration.
+  </Card>
+  <Card title="Web Client" icon="globe" href="/apps/web/overview">
+    Explore the Svelte web client: offline-first persistence, Dexie, and real-time sale updates.
+  </Card>
+</CardGroup>

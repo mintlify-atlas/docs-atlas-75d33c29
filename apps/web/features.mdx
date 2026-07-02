@@ -1,0 +1,274 @@
+---
+title: "Web Client Features: Auth, Catalog, Cart, and Realtime"
+sidebarTitle: "Features"
+description: "Complete feature reference for the AlejoTaller web client including authentication methods, product catalog, offline cart, sale registration, and Pusher real-time events."
+---
+
+Every capability in the web client is implemented as a self-contained feature module under `web/src/core/feature/`. Each module follows the same `data / domain / presentation` layer structure, with discrete use cases encapsulating individual actions. The sections below describe what each feature does and which use cases drive it.
+
+---
+
+## Authentication
+
+The `auth` feature handles all identity flows — from first-time account creation through session management, password recovery, Google OAuth, and administrator-level user management.
+
+### Session & Account
+
+| Use Case | What it does |
+|---|---|
+| `OpenSessionCaseUse` | Email/password login — opens an Appwrite session for the user |
+| `CreateAccountCaseUse` | Registers a new customer account |
+| `CloseSessionsCaseUse` | Terminates all active sessions for the current user |
+| `GetCurrentUserCaseUse` | Retrieves the currently authenticated user |
+
+Guest sessions are supported: unauthenticated users can browse the catalog before being prompted to sign in at the point of purchase.
+
+### Google OAuth
+
+| Use Case | What it does |
+|---|---|
+| `ExchangeGoogleCredentialCaseUse` | Exchanges a Google OAuth credential for an Appwrite session |
+| `LinkGoogleAccountCaseUse` | Links a Google account to an existing Appwrite user |
+
+### Password Recovery
+
+| Use Case | What it does |
+|---|---|
+| `RequestPasswordResetCodeCaseUse` | Sends a password reset code to the user's email |
+| `ConfirmPasswordResetCodeCaseUse` | Validates the code and sets a new password |
+
+The redirect target for the reset confirmation link is provided by the `VITE_PASSWORD_RESET_URL` environment variable.
+
+### Profile Updates
+
+| Use Case | What it does |
+|---|---|
+| `UpdateNameCaseUse` | Updates the user's display name |
+| `UpdatePasswordCaseUse` | Changes the account password |
+| `UpdatePhoneCaseUse` | Updates the phone number on the profile |
+| `UpdatePhotoCaseUse` | Uploads a new profile photo to Appwrite Storage |
+| `UpdateRoleCaseUse` | Changes the user's role label |
+
+### Admin User Management
+
+Administrators can manage other user accounts without leaving the web client. These use cases are backed by an Appwrite Function referenced by `VITE_APPWRITE_USERS_FUNCTION`.
+
+| Use Case | What it does |
+|---|---|
+| `CreateManagedUserCaseUse` | Creates a new user account on behalf of an admin |
+| `UpdateManagedUserCaseUses` | Updates the managed user's profile fields |
+| `DeleteUserCaseUse` | Permanently removes a user account |
+| `GetAllUsersCaseUse` | Lists all user accounts for admin review |
+
+---
+
+## Product Catalog
+
+The `product` feature delivers the full electronics inventory to the customer, backed by an offline-first repository that caches data in Dexie so the catalog remains accessible without a network connection.
+
+### Use Cases
+
+| Use Case | What it does |
+|---|---|
+| `GetAllProductCaseUse` | Fetches all products; serves from IndexedDB when offline and reconciles with Appwrite when online |
+| `GetProductByIdCaseUse` | Retrieves a single product by ID for the detail view |
+| `CheckAProductExistenceCaseUse` | Verifies whether a product record exists |
+| `SaveProductCaseUse` | Persists a new product (admin flow) |
+| `UpdateProductPriceCaseUse` | Updates the price of an existing product |
+| `DeleteProductCaseUse` | Removes a product from the catalog |
+
+### Offline-First Repository
+
+`product.offline-first.repository.ts` implements the offline-first reconciliation strategy. On every fetch, the repository:
+
+1. Returns cached data from the local Dexie `products` table immediately.
+2. Attempts to sync with Appwrite in the background when connectivity is available.
+3. Updates the local table with the latest remote state.
+
+The Dexie schema for products indexes on `$id`, `name`, and `categoryId`, enabling efficient local queries without a network round trip.
+
+---
+
+## Categories
+
+The `category` feature provides the taxonomy used to filter the product catalog.
+
+| Use Case | What it does |
+|---|---|
+| `GetAllCategoriesCaseUse` | Fetches and caches all product categories |
+| `GetCategoryByIdCaseUse` | Retrieves a single category by ID |
+| `SaveCategoryCaseUse` | Creates a new category (admin flow) |
+| `ModifyCategoryCaseUse` | Updates an existing category |
+| `DeleteCategoryCaseUse` | Removes a category |
+
+Categories are stored locally in the Dexie `categories` table, indexed on `$id` and `name`.
+
+---
+
+## Cart & Sales
+
+The `sale` feature manages the entire purchase lifecycle — from cart state through sale registration, delivery preferences, and final verification tracking.
+
+### Cart
+
+`cart.store.ts` is a Svelte writable store that holds the current in-progress cart. It tracks selected products, quantities, the chosen currency, and delivery type before the customer submits a purchase.
+
+### Sale Registration
+
+| Use Case | What it does |
+|---|---|
+| `CreateSaleCaseUse` | Constructs a new `Sale` entity from the cart state |
+| `RegisterNewSaleCaseUse` | Persists the sale to Appwrite, notifies the operator via Telegram, and saves locally to Dexie |
+| `GetSalesCaseUse` | Retrieves the current user's sale history (offline-first) |
+| `UpdateSaleDeliveryTypeCaseUse` | Switches a sale between `PICKUP` and `DELIVERY` |
+| `UpdateSaleVerifiedCaseUse` | Updates the local `buy_state` after a real-time verification event is received |
+
+`RegisterNewSaleCaseUse` coordinates three collaborators:
+
+```typescript
+// RegisterNewSaleCaseUse.ts
+export class RegisterNewSaleCaseUse {
+    constructor(
+        private readonly repository: SaleRepository,
+        private readonly notificationUserProvider: SaleNotificationUserProvider,
+        private readonly telegramNotificator: TelegramNotificator
+    ) {}
+
+    async execute(sale: Sale): Promise<Sale> {
+        const user = await this.notificationUserProvider.getCurrentUser();
+        await this.telegramNotificator.notify(sale, user);
+        return this.repository.create(sale);
+    }
+}
+```
+
+The `TelegramNotificator` implementation sends a notification to the configured Telegram bot so the operator is alerted immediately when a new sale arrives.
+
+### Sale State Machine
+
+Every sale moves through the following states, defined in `enums.ts`:
+
+```typescript
+export enum BuyState {
+    UNVERIFIED = "UNVERIFIED",
+    VERIFIED   = "VERIFIED",
+    DELETED    = "DELETED"
+}
+```
+
+A sale starts as `UNVERIFIED`. The operator confirms or rejects it via the Android operator app, and the web client reflects the final state after receiving the Pusher event.
+
+### Delivery Type
+
+```typescript
+export enum DeliveryType {
+    PICKUP   = "PICKUP",
+    DELIVERY = "DELIVERY"
+}
+```
+
+Customers choose between in-store pickup and home delivery at checkout. This choice can be updated via `UpdateSaleDeliveryTypeCaseUse` before the sale is verified.
+
+### Supported Currencies
+
+```typescript
+export enum Currency {
+    CUP = "CUP",
+    USD = "USD",
+    MLC = "MLC"
+}
+```
+
+Sales can be denominated in CUP, USD, or MLC. The displayed equivalent in other currencies is calculated using exchange rate data fetched by the `exchange` feature.
+
+---
+
+## Real-Time Sale Verification
+
+When an operator processes a reservation, the web client receives the decision instantly via Pusher — no polling required.
+
+### Channel & Events
+
+| Detail | Value |
+|---|---|
+| Channel name | `sale-verification-{userId}` |
+| Confirmed event | `sale:confirmed` |
+| Rejected event | `sale:rejected` |
+
+The channel is scoped to the authenticated user's ID so each customer only receives their own verification events.
+
+### Alert State
+
+`sale-alert.store.ts` manages the in-memory alert queue. When an event arrives, the store adds a `SaleVerificationAlert` entry which the UI reads to render a confirmation or rejection notification:
+
+```typescript
+export interface SaleVerificationAlert {
+    saleId:       string;
+    decision:     'confirmed' | 'rejected';
+    timestamp:    string;
+    amount?:      number;
+    productCount?: number;
+}
+```
+
+Helper derived stores `activeAlerts` and `hasUnreadAlerts` are available for components that need to check unread state without subscribing to the full store.
+
+<Note>
+  The web client only **subscribes** to Pusher events. Publishing is handled exclusively by the `alejo_publisher` function service, which keeps Pusher secrets off the frontend.
+</Note>
+
+---
+
+## Exchange Rates
+
+The `exchange` feature fetches today's CUP exchange rates from two external sources and caches them locally in the Dexie `exchangeRates` table.
+
+| Use Case | What it does |
+|---|---|
+| `GetTodayExchangeCaseUse` | Fetches live exchange rate data from the El Toque API and DirectorioCubano API |
+| `GetCachedTodayExchangeCaseUse` | Returns the last cached `CupExchange` record if a fresh fetch is unavailable |
+
+API endpoints and keys are provided by `VITE_EL_TOQUE_API_URL`, `VITE_EL_TOQUE_API_KEY`, and `VITE_DIRECTORIOCUBO_API_URL`.
+
+---
+
+## Notifications
+
+The `notification` feature delivers promotional announcements and time-limited offers to customers via Pusher channels.
+
+| Use Case | What it does |
+|---|---|
+| `GetAllPromosCaseUse` | Retrieves all promotion records from Appwrite and caches them in Dexie |
+| `GetActivePromosCaseUse` | Filters promotions to only those that are currently valid based on `validUntilEpochMillis` |
+
+Promotions are persisted in the local Dexie `promotions` table and can be displayed to the customer even when offline.
+
+---
+
+## Support
+
+The `support` feature provides a customer support messaging interface backed by the Alset Pulse service, with real-time inbox updates delivered over Pusher.
+
+| Use Case | What it does |
+|---|---|
+| `GetAllSupportMessagesCaseUse` | Loads the customer's support message history |
+| `SubscribeSupportInboxCaseUse` | Subscribes to the Pusher support channel for live incoming messages |
+| `UpdateSupportStatusCaseUse` | Marks a support conversation as read or resolved |
+
+The support service base URL and API key are provided by `VITE_ALSET_PULSE_BASE_URL` and `VITE_ALSET_PULSE_API_KEY`.
+
+---
+
+## APK Download
+
+Customers and operators can download the Android apps directly from the web client. The guided download screen uses three environment variables to construct the download links:
+
+| Variable | Purpose |
+|---|---|
+| `VITE_CLIENT_ANDROID_APK_URL` | Direct download URL for the Android client APK |
+| `VITE_OPERATOR_ANDROID_APK_URL` | Direct download URL for the Android operator APK |
+| `VITE_GITHUB_RELEASES_URL` | Link to the GitHub Releases page for manual browsing |
+
+<Tip>
+  APK URLs should point to the latest stable release asset on GitHub Releases. Update these variables whenever a new release is published to ensure customers always download the current version.
+</Tip>

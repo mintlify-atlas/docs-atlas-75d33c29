@@ -1,0 +1,116 @@
+---
+title: "alejo_publisher: Secure Pusher Event Relay Service"
+sidebarTitle: "Overview"
+description: "alejo_publisher is a minimal Node.js/Express microservice that receives operator decisions and publishes real-time sale verification events to Pusher channels."
+---
+
+`alejo_publisher` is a small, focused HTTP microservice that sits between the Android operator app and Pusher. Its sole responsibility is to receive an authenticated sale decision from the operator, sign and publish the corresponding Pusher event, and return the channel name and event name that were triggered — all without ever exposing Pusher credentials to any client device.
+
+## Why a Separate Service?
+
+Publishing to Pusher requires a **server-side secret key** to sign each trigger request. Embedding that secret in the Android operator APK would make it trivially extractable from the compiled binary. There is also a practical reliability concern: Pusher's signature algorithm is time-based, and mobile device clocks can drift enough to cause authentication failures. Running the Pusher trigger from a server-side process solves both problems at once.
+
+Beyond security, the service acts as a gate: it only publishes after the operator app has already confirmed that Appwrite's `buy_state` field was updated, ensuring the real-time event and the database record stay in sync.
+
+## Technology Stack
+
+| Layer | Technology |
+|---|---|
+| Runtime | Node.js (v18+) |
+| Language | TypeScript 5 |
+| HTTP Framework | Express 4 |
+| Real-time SDK | Pusher server SDK v5 |
+| Build | `tsc` → `dist/` |
+| Dev server | `tsx watch` |
+
+## Architecture
+
+`alejo_publisher` follows a clean architecture layout with three layers:
+
+```
+src/
+├── presentation/http/
+│   └── server.ts                        # Express app, routing, auth middleware
+├── application/usecase/
+│   └── PublishSaleVerificationUseCase.ts # Validates command, delegates to publisher
+├── domain/
+│   ├── entity/
+│   │   ├── PublishSaleVerificationCommand.ts  # Input shape
+│   │   └── SaleDecision.ts                    # "confirmed" | "rejected"
+│   └── repository/
+│       └── SaleRealtimePublisher.ts            # Port (interface)
+└── infrastructure/realtime/
+    └── PusherSaleRealtimePublisher.ts          # Pusher adapter (implementation)
+```
+
+**`PublishSaleVerificationUseCase`** validates the incoming command — ensuring `saleId`, `userId`, and a valid `decision` are present — then delegates to the injected `SaleRealtimePublisher` port.
+
+**`PusherSaleRealtimePublisher`** implements that port. It derives the channel name as `sale-verification-{userId}` and the event name as either `sale:confirmed` or `sale:rejected`, then calls `pusher.trigger()` with the full event payload.
+
+**`server.ts`** wires everything together: it reads environment variables, constructs the Pusher client and use case, registers routes, and provides the `requireApiKey` middleware for Bearer token auth.
+
+## Security
+
+Every call to `POST /sale-verification/publish` must include a valid Bearer token in the `Authorization` header. The token is compared against the `PUBLISHER_API_KEY` environment variable. Requests with a missing, empty, or mismatched token receive a `401 Unauthorized` response immediately — the use case is never invoked.
+
+```
+Authorization: Bearer <PUBLISHER_API_KEY>
+```
+
+<Warning>
+  The default test key `tallerAlejoTestApiKey` is present in `.env.example` for local development only. **Never use it in a production deployment.** Set `PUBLISHER_API_KEY` to a long, randomly generated secret before going live.
+</Warning>
+
+## Endpoints at a Glance
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/health` | None | Liveness check |
+| `POST` | `/sale-verification/publish` | Bearer token | Broadcast sale decision to Pusher |
+
+## Call Flow
+
+The diagram below shows how a sale decision travels from the operator device to the customer's screen:
+
+```
+Operator App (Android)
+    │
+    │  1. Writes buy_state → Appwrite
+    │  2. Reads back buy_state to confirm the write
+    │
+    ▼
+POST /sale-verification/publish
+    │  Authorization: Bearer <PUBLISHER_API_KEY>
+    │  { saleId, userId, decision, amount, productCount, cause }
+    │
+    ▼
+alejo_publisher
+    │  PublishSaleVerificationUseCase.execute()
+    │     └─ validateCommand()
+    │     └─ PusherSaleRealtimePublisher.publishSaleVerification()
+    │           channel   = "sale-verification-{userId}"
+    │           eventName = "sale:confirmed" | "sale:rejected"
+    │
+    ▼
+Pusher
+    │  triggers event on channel
+    │
+    ▼
+Customer App (Android / Web)
+    └─ receives real-time event, updates UI
+```
+
+<Note>
+  The service intentionally does **not** talk to Appwrite itself. It trusts the operator app to have already persisted the decision before calling this endpoint. This keeps the service stateless and fast.
+</Note>
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="API Reference" icon="code" href="/apps/publisher/api-reference">
+    Full endpoint documentation for GET /health and POST /sale-verification/publish, including request/response shapes and error codes.
+  </Card>
+  <Card title="Deployment" icon="rocket" href="/apps/publisher/deployment">
+    Step-by-step guide for local development and deploying to Render, including all environment variable definitions.
+  </Card>
+</CardGroup>

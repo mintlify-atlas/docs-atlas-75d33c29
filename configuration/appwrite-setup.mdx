@@ -1,0 +1,170 @@
+---
+title: "Configuring Appwrite for AlejoTaller"
+sidebarTitle: "Appwrite Setup"
+description: "Step-by-step guide to setting up an Appwrite project with the collections, buckets, and function required by AlejoTaller across Android and web surfaces."
+---
+
+Appwrite is the primary backend for AlejoTaller. It provides authentication (email/password and Google OAuth), a NoSQL database for products, categories, and sales, object storage for product images, and Cloud Functions for privileged server-side operations. Both the Android apps and the Svelte web client connect to the same Appwrite project using their respective SDKs — the Appwrite Kotlin SDK on Android and the Appwrite Web SDK on the web.
+
+## Prerequisites
+
+- A running Appwrite instance. You can use [Appwrite Cloud](https://cloud.appwrite.io) for a managed setup or self-host Appwrite on a VPS or Docker environment.
+- Admin access to the Appwrite console.
+- The AlejoTaller monorepo cloned locally.
+
+---
+
+## Setup Steps
+
+<Steps>
+
+### Create a new Appwrite project
+
+In the Appwrite console, click **Create Project**. Give it a descriptive name (e.g. `AlejoTaller`) and note the **Project ID** that is generated — you will need it for `VITE_APPWRITE_PROJECT_ID` (web) and `APPWRITE_PROJECT_ID` (Android `local.properties`).
+
+Add your web platform:
+1. Inside the project, go to **Platforms → Add Platform → Web**.
+2. Enter your web hostname (e.g. `alejotaller.onrender.com` for production and `localhost` for development).
+
+Add your Android platforms:
+1. Go to **Platforms → Add Platform → Android**.
+2. Enter the application ID `com.elitec.alejotaller` for the client app.
+3. Repeat for the operator app with `com.elitec.alejotallerscan`.
+
+### Enable authentication methods
+
+1. Navigate to **Auth → Settings**.
+2. Enable **Email/Password** authentication.
+3. Enable **Google OAuth2**:
+   - Obtain a **Web Client ID** and **Android Client ID** from the [Google Cloud Console](https://console.cloud.google.com) and enter them in the Appwrite OAuth provider settings.
+   - Copy the **Web Client ID** to `VITE_GOOGLE_CLIENT_ID` (web) and to `GOOGLE_CLOUD_WEBCLIENT`, `GOOGLE_CLOUD_ANDROID_DEBUG`, and `GOOGLE_CLOUD_ANDROID_RELEASE` in `local.properties`.
+4. Optionally configure a **Password Recovery** redirect URL matching `VITE_PASSWORD_RESET_URL`.
+
+### Create the database
+
+1. Go to **Databases → Create Database**.
+2. Choose a memorable name (e.g. `alejo_taller_db`) and note the **Database ID**.
+3. Copy this ID to `VITE_APPWRITE_DATABASE_ID` (web) and `APPWRITE_DATABASE_ID` (Android).
+
+### Create collections
+
+Create the following three collections inside your database. Enable **Document Security** on each collection so that read/write rules can be applied at the document level.
+
+#### `categories` collection
+
+Maps to the `Category` domain entity.
+
+| Attribute | Type | Required | Notes |
+|---|---|---|---|
+| `name` | String | ✅ | Display name of the category. |
+| `description` | String | ✅ | Short description shown in the catalog. |
+| `photoUrl` | String | ⬜ | URL of the category image (may be null). |
+| `status` | String | ✅ | Enum value: `active` or `inactive`. |
+
+Copy the generated Collection ID to `CATEGORY_TABLE_ID` in `local.properties`.
+
+#### `products` collection
+
+Maps to the `Product` domain entity.
+
+| Attribute | Type | Required | Notes |
+|---|---|---|---|
+| `name` | String | ✅ | Product display name. |
+| `description` | String | ✅ | Full product description. |
+| `existence` | Integer | ✅ | Current stock count. |
+| `price` | Float | ✅ | Unit price (must be ≥ 0). |
+| `photoUrl` | String | ✅ | URL pointing to the product image in Appwrite Storage. |
+| `categoryId` | String | ✅ | ID referencing the parent category document. |
+| `rating` | Float | ⬜ | Average customer rating, defaults to `0.0`. |
+| `createdAtIso` | String | ⬜ | ISO 8601 creation timestamp. |
+
+Copy the generated Collection ID to `PRODUCT_TABLE_ID` in `local.properties`.
+
+#### `sales` collection
+
+Maps to the `Sale` domain entity and drives the sale verification flow.
+
+| Attribute | Type | Required | Notes |
+|---|---|---|---|
+| `date` | String | ✅ | ISO 8601 sale date. |
+| `amount` | Float | ✅ | Total sale amount. |
+| `verified` | String | ✅ | Enum: `UNVERIFIED`, `VERIFIED`, or `DELETED`. |
+| `products` | String | ✅ | JSON-serialized array of `SaleItem` objects (productId, productName, quantity, price). |
+| `currency` | String | ✅ | Enum: `CUP`, `USD`, or `MLC`. |
+| `userId` | String | ✅ | Appwrite user ID of the purchasing customer. |
+| `deliveryType` | String | ⬜ | Enum: `PICKUP` or `DELIVERY`. |
+| `deliveryAddress` | String | ⬜ | JSON-serialized `DeliveryAddress` object (province, municipality, streets, phone, etc.). |
+
+<Tip>
+Enable **Realtime** on the `sales` collection (Appwrite console → collection → Settings → Realtime). The operator Android app (`alejotallerscan`) subscribes to Appwrite Realtime to detect when `buy_state` changes so it can trigger the publisher microservice and push the confirmation to Pusher.
+</Tip>
+
+Copy the generated Collection ID to `SALE_TABLE_ID` in `local.properties`.
+
+### Create the storage bucket
+
+1. Go to **Storage → Create Bucket**.
+2. Name it (e.g. `product-images`) and configure permissions so authenticated users can read files.
+3. Note the **Bucket ID** and copy it to `VITE_APPWRITE_STORAGE_BUCKET_ID` (web) and `APPWRITE_BUCKECT_ID` (Android).
+
+### Deploy the user-management Cloud Function
+
+AlejoTaller uses an Appwrite Cloud Function (`VITE_APPWRITE_USERS_FUNCTION`) for privileged user-management operations that cannot safely run from the frontend — for example, listing or deleting users from the admin dashboard.
+
+1. In the Appwrite console, go to **Functions → Create Function**.
+2. Select a Node.js runtime and deploy your function code.
+3. Copy the generated **Function ID** to `VITE_APPWRITE_USERS_FUNCTION` in the web `.env`.
+
+<Note>
+The exact function implementation lives outside the main monorepo. Refer to the admin dashboard repository at [github.com/danielitoCode/dash_alejo_taller](https://github.com/danielitoCode/dash_alejo_taller) for the function source.
+</Note>
+
+### Copy all IDs to environment files
+
+Once every resource is created, populate the relevant env files:
+
+**`web/.env`**
+
+```env
+VITE_APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
+VITE_APPWRITE_PROJECT_ID=<your-project-id>
+VITE_APPWRITE_DATABASE_ID=<your-database-id>
+VITE_APPWRITE_STORAGE_BUCKET_ID=<your-bucket-id>
+VITE_APPWRITE_USERS_FUNCTION=<your-function-id>
+VITE_APPWRITE_CONSOLE_URL=https://cloud.appwrite.io/console/project-<your-project-id>
+```
+
+**`local.properties`** (Android root)
+
+```properties
+APPWRITE_PROJECT_ENDPOINT=https://cloud.appwrite.io/v1
+APPWRITE_PROJECT_ID=<your-project-id>
+APPWRITE_DATABASE_ID=<your-database-id>
+APPWRITE_BUCKECT_ID=<your-bucket-id>
+CATEGORY_TABLE_ID=<your-categories-collection-id>
+PRODUCT_TABLE_ID=<your-products-collection-id>
+SALE_TABLE_ID=<your-sales-collection-id>
+APPWRITE_TELEGRAM_FUNCTION_URL=<your-telegram-function-url>
+```
+
+</Steps>
+
+---
+
+## Collection Permissions Reference
+
+Appwrite uses role-based permissions at both the collection and document level. A recommended starting configuration for AlejoTaller:
+
+| Collection | Read | Create | Update | Delete |
+|---|---|---|---|---|
+| `categories` | Any | Team (admins) | Team (admins) | Team (admins) |
+| `products` | Any | Team (admins) | Team (admins) | Team (admins) |
+| `sales` | Users (owner only) | Users | Team (operators) | Team (admins) |
+
+<Warning>
+Do not grant public write access to the `sales` collection. Each sale document should only be writable by the authenticated user who created it and by operator-role accounts.
+</Warning>
+
+---
+
+For the full list of environment variables that reference these IDs, see the [Environment Variables Reference](/configuration/environment-variables).

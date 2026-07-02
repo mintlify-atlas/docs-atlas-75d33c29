@@ -1,20 +1,75 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "AlejoTaller: Full-Stack Electronics Store MVP"
+sidebarTitle: "Home"
+description: "AlejoTaller is a multi-surface monorepo for managing an electronics store — Android client, Android operator scanner, Svelte web app, and a real-time publisher service."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+AlejoTaller is an operational suite for sales, reservations, and real-time order verification. It spans four surfaces — a customer-facing Android app, an operator Android scanner, a Svelte web client, and a lightweight Node.js publisher microservice — all sharing business logic modules and built on an **offline-first, real-time** architecture backed by Appwrite and Pusher.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    Understand the project vision, monorepo structure, and which surface to start with.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Explore the layered feature architecture, shared modules, and offline-first design.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get the full monorepo running locally in a few steps.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/environment-variables">
+    Set up Appwrite, Pusher, and all required environment variables.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## Surfaces
+
+AlejoTaller is a monorepo. Each surface is an independent application that shares critical business modules.
+
+<CardGroup cols={2}>
+  <Card title="Android Client" icon="mobile" href="/apps/android-client/overview">
+    Customer-facing Android app with offline shopping, cart, and real-time sale status.
+  </Card>
+  <Card title="Android Operator" icon="qrcode" href="/apps/android-operator/overview">
+    QR-scanning operator app for verifying and confirming customer orders.
+  </Card>
+  <Card title="Web Client" icon="globe" href="/apps/web/overview">
+    Svelte-based web storefront with IndexedDB persistence and real-time updates.
+  </Card>
+  <Card title="Publisher Function" icon="bolt" href="/apps/publisher/overview">
+    Secure Node.js microservice that relays operator decisions to Pusher channels.
+  </Card>
+</CardGroup>
+
+## How It Works
+
+<Steps>
+  <Step title="Customer places an order">
+    The Android client or web app lets the customer browse the catalog, add items to cart, and submit a purchase or reservation. The order is persisted locally first, then synced to Appwrite.
+  </Step>
+  <Step title="Operator reviews the order">
+    The operator app (AlejoTallerScan) loads pending orders, scans a QR code or selects manually, and confirms or rejects the sale. The state is written back to Appwrite.
+  </Step>
+  <Step title="Publisher broadcasts the decision">
+    The operator app calls the `alejo_publisher` microservice, which validates the Appwrite state change and publishes a `sale:confirmed` or `sale:rejected` event to the customer's Pusher channel.
+  </Step>
+  <Step title="Customer receives real-time feedback">
+    The Android client and web app are subscribed to the Pusher channel. They receive the event instantly and update the local sale state and UI without any polling.
+  </Step>
+</Steps>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Offline-First" icon="database" href="/architecture/offline-first">
+    Room (Android) and Dexie/IndexedDB (web) keep the app functional with no connectivity. Sync happens automatically when the network returns.
+  </Card>
+  <Card title="Real-Time Events" icon="signal" href="/architecture/realtime-sync">
+    Pusher delivers verification events to all subscribed surfaces simultaneously. No polling, no delays.
+  </Card>
+  <Card title="Shared Business Logic" icon="cubes" href="/modules/shared-auth">
+    Kotlin shared modules (`shared-auth`, `shared-sale`, `shared-core`, `shared-data`) eliminate duplicate logic across Android surfaces.
+  </Card>
+  <Card title="Publisher API" icon="server" href="/apps/publisher/api-reference">
+    A minimal Express service isolates Pusher secrets from mobile and web clients.
+  </Card>
+</CardGroup>

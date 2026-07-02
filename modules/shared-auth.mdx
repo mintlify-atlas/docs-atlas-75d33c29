@@ -1,0 +1,262 @@
+---
+title: "shared-auth: Shared Android Authentication Module"
+sidebarTitle: "shared-auth"
+description: "The shared-auth Kotlin module provides authentication use cases, entities, and repository contracts shared between the AlejoTaller client and operator Android apps."
+---
+
+The `shared-auth` module is an Android library that centralizes all authentication logic for the AlejoTaller monorepo. Both the customer app (`app`) and the operator scanner app (`alejotallerscan`) depend on this module, ensuring that session management, user identity, and role enforcement are never duplicated across surfaces. All concrete infrastructure (Appwrite SDK calls, DataStore persistence) lives in `shared-data`; `shared-auth` exposes only pure domain contracts and use cases.
+
+## What It Exports
+
+| Layer | Contents |
+|---|---|
+| **Domain entities** | `User`, `UserProfile`, `OperatorAccess` (role helpers) |
+| **Use cases** | `AuthUserCaseUse`, `AuthOperatorUserCaseUse`, `CloseSessionCaseUse`, `GetCurrentUserInfoCaseUse` |
+| **Repository interfaces** | `AccountRepository`, `SessionManager` |
+| **DI** | `SharedAuthFeatureModule` (Koin object, wired by each app module) |
+
+---
+
+## Domain Entities
+
+### `User`
+
+The core identity entity. The `init` block enforces that the name is never blank at construction time.
+
+```kotlin
+data class User(
+    val id: String,
+    val name: String,
+    val email: String,
+    val pass: String,
+    val userProfile: UserProfile
+) {
+    init {
+        require(name.isNotBlank()) { "El nombre no puede estar vacio" }
+    }
+}
+```
+
+### `UserProfile`
+
+Profile metadata fetched from Appwrite preferences. The `role` field drives access-control decisions across both apps.
+
+```kotlin
+data class UserProfile(
+    val sub: String,
+    val phone: String? = "",
+    val photoUrl: String? = "",
+    val verification: Boolean = false,
+    val role: String? = null
+)
+```
+
+### `OperatorAccess`
+
+Rather than a class, operator access is expressed as two top-level extension functions on `String?`. The allowed role set is kept private so callers cannot bypass it.
+
+```kotlin
+private val OPERATOR_ALLOWED_ROLES = setOf("operator", "admin", "administrator", "owner")
+
+fun String?.normalizeBusinessRole(): String? =
+    this?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+
+fun String?.hasOperatorAccess(): Boolean =
+    normalizeBusinessRole() in OPERATOR_ALLOWED_ROLES
+```
+
+`normalizeBusinessRole()` trims and lowercases before comparison, making role checks case-insensitive and whitespace-safe.
+
+---
+
+## Repository Interfaces
+
+### `AccountRepository`
+
+Retrieves the currently authenticated user from the remote account backend.
+
+```kotlin
+interface AccountRepository {
+    suspend fun getCurrentUserInfo(): User
+}
+```
+
+### `SessionManager`
+
+Manages Appwrite email sessions. The port layer keeps the domain free of any Appwrite SDK types; concrete wiring lives in `shared-data`.
+
+```kotlin
+interface SessionManager {
+    suspend fun openEmailSession(email: String, password: String): String
+    suspend fun isAnySessionAlive(): Boolean
+    suspend fun closeCurrentSession()
+}
+```
+
+<Note>
+Both interfaces are implemented in `shared-data` (`AccountRepositoryImpl` and `AppwriteSessionManager`). The domain module never imports the Appwrite SDK directly.
+</Note>
+
+---
+
+## Use Cases
+
+All use cases follow the Kotlin operator-function convention — they are invoked as `caseUse(args)` rather than `caseUse.execute(args)`.
+
+### `AuthUserCaseUse`
+
+Authenticates a user with an email/password pair via `SessionManager`. The email is trimmed before the call to strip accidental whitespace.
+
+```kotlin
+class AuthUserCaseUse(
+    private val sessionManager: SessionManager
+) {
+    suspend operator fun invoke(email: String, pass: String): Result<String> = runCatching {
+        sessionManager.openEmailSession(email.trim(), pass)
+    }
+}
+```
+
+Returns a `Result<String>` containing the Appwrite `userId` on success.
+
+### `AuthOperatorUserCaseUse`
+
+Operator-specific authentication that composes three other use cases. After a successful base login it fetches the current user and checks whether the role has operator access. If the role check fails, the session is immediately closed and an `IllegalAccessException` is thrown.
+
+```kotlin
+class AuthOperatorUserCaseUse(
+    private val authUserCaseUse: AuthUserCaseUse,
+    private val getCurrentUserInfoCaseUse: GetCurrentUserInfoCaseUse,
+    private val closeSessionCaseUse: CloseSessionCaseUse
+) {
+    suspend operator fun invoke(email: String, pass: String): Result<User> = runCatching {
+        authUserCaseUse(email, pass).getOrThrow()
+
+        val currentUser = getCurrentUserInfoCaseUse().getOrThrow()
+
+        if (!currentUser.userProfile.role.hasOperatorAccess()) {
+            closeSessionCaseUse()
+            throw IllegalAccessException(
+                "Solo operadores autorizados pueden acceder a esta aplicacion."
+            )
+        }
+
+        currentUser
+    }
+}
+```
+
+### `CloseSessionCaseUse`
+
+Terminates the current active session. Used both as a standalone logout action and internally by `AuthOperatorUserCaseUse` when a role check fails.
+
+```kotlin
+class CloseSessionCaseUse(
+    private val sessionManager: SessionManager
+) {
+    suspend operator fun invoke(): Result<Unit> = runCatching {
+        sessionManager.closeCurrentSession()
+    }
+}
+```
+
+### `GetCurrentUserInfoCaseUse`
+
+Retrieves the full `User` object (including `UserProfile`) for the currently authenticated account.
+
+```kotlin
+class GetCurrentUserInfoCaseUse(
+    private val accountRepository: AccountRepository
+) {
+    suspend operator fun invoke(): Result<User> = runCatching {
+        accountRepository.getCurrentUserInfo()
+    }
+}
+```
+
+---
+
+## Koin DI Module
+
+`SharedAuthFeatureModule` is a Kotlin `object` that acts as a namespace marker for Koin bindings. Each consuming app module (`:app`, `:alejotallerscan`) wires the concrete implementations from `shared-data` and provides the use cases in its own Koin module, referencing `SharedAuthFeatureModule` as a logical grouping anchor.
+
+```kotlin
+package com.elitec.shared_auth.feature.di
+
+object SharedAuthFeatureModule
+```
+
+<Tip>
+Concrete Koin bindings (injecting `AccountRepositoryImpl`, `AppwriteSessionManager`, and the use-case classes) are declared in each app's own DI module so that each surface can supply its own Appwrite `Account` client instance.
+</Tip>
+
+---
+
+## Unit Tests
+
+Tests use fake implementations (`FakeSessionManager`, `FakeAccountRepository`) so no Android runtime or Appwrite SDK is required.
+
+### `AuthUserCaseUseTest`
+
+Verifies that the email is trimmed before it is forwarded to `SessionManager.openEmailSession`. Given an email with leading and trailing spaces (`"  USER@Alejo.dev  "`), the test asserts that `sessionManager.openedEmail` equals `"USER@Alejo.dev"` and the call succeeds.
+
+```kotlin
+@Test
+fun `normalize a email before open a session`() = runTest {
+    val sessionManager = FakeSessionManager()
+    val caseUse = AuthUserCaseUse(sessionManager)
+
+    val result = caseUse("  USER@Alejo.dev  ", "pass")
+
+    assertTrue(result.isSuccess)
+    assertEquals("USER@Alejo.dev", sessionManager.openedEmail)
+    assertEquals("pass", sessionManager.openedPassword)
+}
+```
+
+### `AuthOperatorUserCaseUseTest`
+
+Covers three scenarios:
+
+| Scenario | Role | Expected outcome |
+|---|---|---|
+| Operator role is allowed | `"operator"` | `Result.success`, `closeCalls == 0` |
+| Admin role expressed as `"administrator"` | `"administrator"` | `Result.success`, `closeCalls == 0` |
+| Non-operator role is rejected | `"viewer"` | `Result.failure<IllegalAccessException>`, `closeCalls == 1` |
+
+```kotlin
+@Test
+fun `close session when rol do not access of operator`() = runTest {
+    val sessionManager = FakeSessionManager()
+    val caseUse = AuthOperatorUserCaseUse(
+        authUserCaseUse = AuthUserCaseUse(sessionManager),
+        getCurrentUserInfoCaseUse = GetCurrentUserInfoCaseUse(
+            FakeAccountRepository(role = "viewer")
+        ),
+        closeSessionCaseUse = CloseSessionCaseUse(sessionManager)
+    )
+
+    val result = caseUse("viewer@alejo.dev", "pass")
+
+    assertTrue(result.isFailure)
+    assertIs<IllegalAccessException>(result.exceptionOrNull())
+    assertEquals(1, sessionManager.closeCalls)
+}
+```
+
+---
+
+## Adding to a Gradle Module
+
+`shared-auth` is an Android library. Add it as an `implementation` dependency in any Android module's `build.gradle.kts`:
+
+```kotlin
+// In :app or :alejotallerscan build.gradle.kts
+dependencies {
+    implementation(project(":shared-auth"))
+}
+```
+
+<Note>
+`shared-auth` itself depends on `project(":shared-core")` and the Appwrite Android SDK, so those transitive dependencies are pulled in automatically. The module requires `minSdk = 26` and compiles against SDK 36.
+</Note>

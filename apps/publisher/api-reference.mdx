@@ -1,0 +1,188 @@
+---
+title: "alejo_publisher REST API Reference"
+sidebarTitle: "API Reference"
+description: "Full reference for the two alejo_publisher endpoints: GET /health for liveness checks and POST /sale-verification/publish for broadcasting sale decisions to Pusher."
+---
+
+`alejo_publisher` exposes exactly two HTTP endpoints. The health endpoint requires no credentials and is used by uptime monitors and load balancers. The publish endpoint requires a Bearer token and is called exclusively by the operator application after it has confirmed a sale decision in Appwrite.
+
+---
+
+## GET /health
+
+Returns a static JSON object confirming the service is running. No authentication is required. This endpoint is safe to poll from external monitors.
+
+**Response — 200 OK**
+
+```json
+{
+  "ok": true,
+  "service": "alejo_publisher"
+}
+```
+
+**Example**
+
+```bash
+curl http://localhost:3000/health
+```
+
+<ResponseField name="ok" type="boolean">
+  Always `true` when the service is up.
+</ResponseField>
+
+<ResponseField name="service" type="string">
+  Always `"alejo_publisher"`.
+</ResponseField>
+
+---
+
+## POST /sale-verification/publish
+
+Validates the sale decision command and publishes the corresponding event to the customer's Pusher channel. The operator application calls this endpoint after it has successfully written the sale state to Appwrite.
+
+### Authentication
+
+Every request must include a valid Bearer token in the `Authorization` header. The token is matched against the `PUBLISHER_API_KEY` environment variable configured on the server.
+
+```
+Authorization: Bearer <PUBLISHER_API_KEY>
+```
+
+A missing, empty, or incorrect token returns `401` before the request body is ever parsed.
+
+### Request Body
+
+<ParamField body="saleId" type="string" required>
+  The Appwrite document ID of the sale being verified. Must be a non-empty string. Example: `"69c9593b002b167bf4fb"`.
+</ParamField>
+
+<ParamField body="userId" type="string" required>
+  The Appwrite user ID of the customer. Used to construct the Pusher channel name: `sale-verification-{userId}`. Must be a non-empty string. Example: `"698f82750024bfe2dc52"`.
+</ParamField>
+
+<ParamField body="decision" type="string" required>
+  The operator's verdict for the sale. Must be exactly `"confirmed"` or `"rejected"`. Any other value returns a `400` validation error.
+</ParamField>
+
+<ParamField body="amount" type="number">
+  Total monetary amount of the sale. Forwarded as-is to the Pusher event payload. Accepts `null`.
+</ParamField>
+
+<ParamField body="productCount" type="number">
+  Number of line items in the sale. Forwarded as-is to the Pusher event payload. Accepts `null`.
+</ParamField>
+
+<ParamField body="cause" type="string">
+  Human-readable reason for a rejection. Should be provided when `decision` is `"rejected"` so the customer app can display a meaningful message. Accepts `null`.
+</ParamField>
+
+**Request example — confirmed sale**
+
+```json
+{
+  "saleId": "69c9593b002b167bf4fb",
+  "userId": "698f82750024bfe2dc52",
+  "decision": "confirmed",
+  "amount": 20.5,
+  "productCount": 4,
+  "cause": null
+}
+```
+
+**Request example — rejected sale**
+
+```json
+{
+  "saleId": "69c9593b002b167bf4fb",
+  "userId": "698f82750024bfe2dc52",
+  "decision": "rejected",
+  "amount": 20.5,
+  "productCount": 4,
+  "cause": "Producto sin stock disponible"
+}
+```
+
+### Successful Response — 200 OK
+
+```json
+{
+  "ok": true,
+  "channel": "sale-verification-698f82750024bfe2dc52",
+  "eventName": "sale:confirmed"
+}
+```
+
+<ResponseField name="ok" type="boolean">
+  `true` when the Pusher trigger call succeeded.
+</ResponseField>
+
+<ResponseField name="channel" type="string">
+  The Pusher channel that received the event. Always formatted as `sale-verification-{userId}`.
+</ResponseField>
+
+<ResponseField name="eventName" type="string">
+  The Pusher event name that was triggered. Either `"sale:confirmed"` or `"sale:rejected"`, derived directly from the `decision` field.
+</ResponseField>
+
+### Channel and Event Naming
+
+The channel name and event name are derived deterministically from the request body:
+
+| Field | Input value | Result |
+|---|---|---|
+| `channel` | `userId = "698f82750024bfe2dc52"` | `"sale-verification-698f82750024bfe2dc52"` |
+| `eventName` | `decision = "confirmed"` | `"sale:confirmed"` |
+| `eventName` | `decision = "rejected"` | `"sale:rejected"` |
+
+Customer apps subscribe to the channel `sale-verification-{their own userId}` and listen for both `sale:confirmed` and `sale:rejected` events.
+
+### Error Responses
+
+All error responses share the same shape:
+
+```json
+{ "ok": false, "error": "<message>" }
+```
+
+| Status | Cause | Example message |
+|---|---|---|
+| `400` | `saleId` is missing or blank | `"saleId es obligatorio"` |
+| `400` | `userId` is missing or blank | `"userId es obligatorio"` |
+| `400` | `decision` is not `"confirmed"` or `"rejected"` | `"decision debe ser confirmed o rejected"` |
+| `401` | Missing or incorrect Bearer token | `"Unauthorized"` |
+| `500` | Pusher SDK error or unexpected exception | Error message from the SDK |
+
+<Note>
+  The `400` vs `500` split is handled automatically in the error middleware: any error message containing `"obligatorio"` or `"decision debe"` maps to status `400`; everything else maps to `500`.
+</Note>
+
+### Full curl Example
+
+```bash
+curl -X POST https://your-service.onrender.com/sale-verification/publish \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer tallerAlejoTestApiKey" \
+  -d '{
+    "saleId": "69c9593b002b167bf4fb",
+    "userId": "698f82750024bfe2dc52",
+    "decision": "confirmed",
+    "amount": 20.5,
+    "productCount": 4,
+    "cause": null
+  }'
+```
+
+**Expected response**
+
+```json
+{
+  "ok": true,
+  "channel": "sale-verification-698f82750024bfe2dc52",
+  "eventName": "sale:confirmed"
+}
+```
+
+<Tip>
+  Replace `tallerAlejoTestApiKey` with your actual `PUBLISHER_API_KEY` value. In local development the default key from `.env.example` works, but production deployments must use a different secret.
+</Tip>

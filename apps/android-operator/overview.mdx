@@ -1,0 +1,79 @@
+---
+title: "Android Operator App: QR Scanner and Order Verifier"
+sidebarTitle: "Overview"
+description: "AlejoTallerScan is the operator-facing Android app for scanning QR codes, verifying customer orders, and publishing real-time confirmation events via alejo_publisher."
+---
+
+AlejoTallerScan is the operator surface of the AlejoTaller monorepo. Store operators use it to confirm or reject customer sales in real time: they scan a QR code presented by the customer (or look up a reservation manually), review the order details fetched from Appwrite, apply a decision, and trigger a Pusher event through the `alejo_publisher` function so both the Android client app and the web client react immediately.
+
+## Role in the Monorepo
+
+The operator app sits at the intersection of every other surface in the system. It reads and writes sale documents in Appwrite, calls `alejo_publisher` to publish `sale:confirmed` or `sale:rejected` to the appropriate Pusher channel, and keeps a local Room database so the operator's action history survives offline periods and app restarts.
+
+```text
+Customer Android / Web
+        │
+        ▼
+    Appwrite  ◄──── AlejoTallerScan (writes buy_state)
+        │                   │
+        │                   ▼
+        │           alejo_publisher (POST /sale-verification/publish)
+        │                   │
+        └───────────────────▼
+                        Pusher
+                  ┌─────────────────┐
+                  │  sale:confirmed │
+                  │  sale:rejected  │
+                  └────────┬────────┘
+              ┌────────────┴────────────┐
+              ▼                         ▼
+     Android client app           Web client app
+```
+
+The operator app is the only actor that writes the `buy_state` field on a sale document. No decision is forwarded to Pusher unless Appwrite first confirms the state transition — the app re-fetches the sale after each write and verifies the remote value before calling the publisher. This prevents stale or duplicate events.
+
+## Key Responsibilities
+
+| Responsibility | Detail |
+|---|---|
+| **QR scanning** | Decodes sale QR codes using CameraX + ML Kit and parses `saleId`, `userId`, `amount`, and line items from multiple encoding formats (query string, JSON, pipe-separated) |
+| **Manual lookup** | Searches reservations by `SALE_ID`, `USER_ID`, `CUSTOMER_NAME`, or `DATE` with optional status filters (`PENDING`, `CONFIRMED`, `REJECTED`, `ALL`) |
+| **Sale verification** | Confirms (`VERIFIED`) or rejects (`DELETED`) via Appwrite, then calls `alejo_publisher` |
+| **Remote state check** | Re-fetches the sale from Appwrite after each update; rolls back local state if the expected `buy_state` is not reflected remotely |
+| **Local operator history** | Persists every processed sale in Room as an `OperatorSaleRecord` with `CONFIRMED` / `REJECTED` action, amount, customer name, and item summary |
+| **Pending sync** | `SyncPendingOperatorSalesCaseUse` detects locally cached `UNVERIFIED` sales and reconciles them against Appwrite on reconnect |
+| **Conflict notifications** | Shows a local notification when a pending sale is found already verified remotely — preventing double processing by multiple operators |
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Language | Kotlin |
+| UI | Jetpack Compose, Material 3 |
+| Camera & scanning | CameraX, ML Kit Barcode Scanning |
+| Local persistence | Room (version 2, `SaleDto` + `OperatorSaleRecordEntity`) |
+| Dependency injection | Koin |
+| Backend | Appwrite Kotlin SDK |
+| Publisher HTTP client | OkHttp (`POST /sale-verification/publish`) |
+| Realtime events | Pusher Java Client |
+| Async | Kotlin Coroutines, StateFlow |
+| Navigation | Jetpack Navigation 3 |
+| Min SDK | 26 (Android 8.0) |
+
+## Shared Modules
+
+AlejoTallerScan depends on four shared Gradle modules that live at the monorepo root:
+
+- **shared-auth** — operator authentication and the `OperatorAccess` role check (`operator`, `admin`, `administrator`, `owner`)
+- **shared-core** — cross-cutting utilities and rules reused across all surfaces
+- **shared-data** — `SaleDto`, `SaleDao`, `SaleNetRepository`, mappers, and persistence converters
+- **shared-sale** — sale domain entities (`Sale`, `BuyState`), use cases (`GetSalesByIdCaseUse`, `SyncSalesCaseUse`, `ObserveAllSalesCaseUse`, `UpdateSaleVerificationFromRealtimeCaseUse`), and repository contracts
+
+<CardGroup cols={2}>
+  <Card title="Features" icon="list-check" href="/apps/android-operator/features">
+    Detailed breakdown of every operator feature: scanning, verification flow, history, pending sync, and conflict notifications.
+  </Card>
+  <Card title="Build & Run" icon="hammer" href="/apps/android-operator/build-and-run">
+    Step-by-step instructions to compile and install AlejoTallerScan with Gradle, including `local.properties` configuration.
+  </Card>
+</CardGroup>

@@ -1,0 +1,365 @@
+---
+title: "Offline-First Architecture in AlejoTaller"
+sidebarTitle: "Offline-First"
+description: "AlejoTaller uses an offline-first strategy across all surfaces: local persistence with Room (Android) and Dexie (web) ensures the app works without network connectivity."
+---
+
+AlejoTaller is designed from the ground up for environments where connectivity cannot be assumed. Every feature persists data locally first, then synchronises with Appwrite when a network path is available. This discipline — **local write first, remote reconciliation later** — means the app remains fully operational even when the backend is unreachable for extended periods.
+
+## Philosophy
+
+The guiding principle is that the network is an optimisation, not a requirement. When a customer creates a sale, browses the product catalogue, or navigates categories, the interaction completes against the local store immediately. The remote push happens asynchronously and, if it fails, is retried or queued for a later sync pass.
+
+This approach maps directly to real-world operating conditions: Cuban mobile and home internet connections are frequently intermittent, and the app must remain useful regardless of whether Appwrite is reachable at the moment of interaction.
+
+```
+Local store (Room / Dexie)
+        ↓  immediate
+User action ──→ local write succeeds
+        ↓  async / best-effort
+Appwrite ← push; retry on failure; sync reconciles on reconnect
+```
+
+---
+
+## Android: Room as Local Source of Truth
+
+On Android, [Room](https://developer.android.com/training/data-storage/room) provides the SQLite-backed local database. The main app database class (`AppBD`) registers one DAO per feature:
+
+```kotlin
+@Database(
+    entities = [
+        CategoryDto::class,
+        ProductDto::class,
+        SaleDto::class,
+        PromotionDto::class,
+        CupExchangeLocalDto::class
+    ],
+    version = 10,
+)
+@TypeConverters(DateTimeConverter::class, ListConverter::class)
+abstract class AppBD : RoomDatabase() {
+    abstract fun categoriesDao(): CategoryDao
+    abstract fun productsDao(): ProductDao
+    abstract fun saleDao(): SaleDao
+    abstract fun promotionDao(): PromotionDao
+    abstract fun exchangeDao(): ExchangeDao
+}
+```
+
+Each DAO follows a consistent interface. `SaleDao` is representative:
+
+```kotlin
+@Dao
+interface SaleDao {
+    @Query("SELECT * FROM saledto")
+    fun getAllFlow(): Flow<List<SaleDto>>
+
+    @Query("SELECT * FROM saledto")
+    fun getAll(): List<SaleDto>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(items: List<SaleDto>)
+
+    @Transaction
+    suspend fun replaceAll(sales: List<SaleDto>) {
+        deleteAll()
+        insertAll(sales)
+    }
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(items: SaleDto)
+
+    @Query("SELECT * FROM saledto WHERE id = :id")
+    suspend fun getById(id: String): SaleDto
+
+    @Query("DELETE FROM saledto")
+    suspend fun deleteAll()
+}
+```
+
+`OnConflictStrategy.REPLACE` means that any incoming record with the same primary key silently wins, making upserts the default operation across all feature DAOs.
+
+---
+
+## Web: Dexie (IndexedDB) as Local Source of Truth
+
+On the web client, [Dexie](https://dexie.org/) wraps IndexedDB. The single `AppDatabase` instance (exported as `db`) serves all features through typed `Table<T>` properties:
+
+```typescript
+class AppDatabase extends Dexie {
+    products!: Table<ProductDTO>
+    categories!: Table<CategoryDTO>
+    promotions!: Table<PromotionDTO>
+    sales!: Table<SaleDTO>
+    exchangeRates!: Table<CupExchange>
+
+    constructor() {
+        super("alejo-taller-business-db")
+
+        this.version(1).stores({
+            products: "$id, name, categoryId",
+            categories: "$id, name",
+            promotions: "$id, validUntilEpochMillis",
+            sales: "$id, userId, verified"
+        })
+
+        this.version(2).stores({
+            products: "$id, name, categoryId",
+            categories: "$id, name",
+            promotions: "$id, validUntilEpochMillis",
+            sales: "$id, user_id, buy_state",
+            exchanges: "$id, usd_reference",
+        })
+
+        this.version(3).stores({
+            products: "$id, name, categoryId",
+            categories: "$id, name",
+            promotions: "$id, validUntilEpochMillis",
+            sales: "$id, user_id, buy_state",
+            exchangeRates: "id, updatedAt, source"
+        })
+    }
+}
+
+export const db = new AppDatabase()
+```
+
+The schema has evolved through three versions, tracking the addition of the `exchanges` table and the rename of the `verified` index on sales to `buy_state`, which aligns with the domain enum used across all surfaces.
+
+<Note>
+The `$id` primary key on all feature tables is the Appwrite document ID. Using the remote ID as the local key makes upserts idempotent — receiving the same document twice is safe.
+</Note>
+
+---
+
+## Offline-First Repository Pattern
+
+All features share the same two-step contract: **try remote first, fall back to local on failure**. For reads the pattern is: fetch remote → cache in local store → return mapped domain objects. On network failure, return whatever is in the local store. For writes, the failure behaviour depends on whether the operation can be deferred.
+
+### Sale repository (web)
+
+`SaleOfflineFirstRepository` is the canonical example of the read-side pattern on web:
+
+```typescript
+export class SaleOfflineFirstRepository implements SaleRepository {
+    constructor(private readonly net: SaleNetRepository) {}
+
+    async getAllSales(): Promise<Sale[]> {
+        try {
+            const remote = await this.net.getAll()
+            await db.sales.bulkPut(remote)        // refresh local cache
+            return remote.map(saleFromDTO)
+        } catch {
+            const local = await db.sales.toArray() // serve stale local copy
+            return local.map(saleFromDTO)
+        }
+    }
+
+    async getByUser(userId: string): Promise<Sale[]> {
+        try {
+            const remote = await this.net.getByUser(userId)
+            await db.sales.bulkPut(remote)
+            return remote.map(saleFromDTO)
+        } catch {
+            const local = await db.sales
+                .where("user_id").equals(userId).toArray()
+            return local.map(saleFromDTO)
+        }
+    }
+
+    async create(sale: Sale): Promise<Sale> {
+        try {
+            const created = await this.net.create(saleToDTO(sale))
+            await db.sales.put(created)           // mirror remote result locally
+            return saleFromDTO(created)
+        } catch (error: any) {
+            logger.error(
+                `Error al crear venta en Appwrite: ${error?.message ?? "desconocido"}`,
+                error?.stack
+            )
+            throw error                           // creation errors are not silently swallowed
+        }
+    }
+}
+```
+
+### Product repository (web)
+
+`ProductOfflineFirstRepository` adds a `sync()` method that performs a full remote-wins reconciliation — useful for the operator app when bringing a freshly connected device up to date:
+
+```typescript
+async sync(): Promise<void> {
+    const remote = await this.net.getAll()
+    await db.products.clear()
+    await db.products.bulkPut(remote)
+}
+```
+
+The read methods follow the same try-remote/fallback-to-local pattern. `getAll()` additionally sorts the local fallback result by `$createdAt` descending so the most recent products surface first even when offline:
+
+```typescript
+async getAll(): Promise<Product[]> {
+    try {
+        const remote = await this.net.getAll()
+        await db.products.bulkPut(remote)
+        return remote.map(productFromDTO)
+    } catch (error: any) {
+        logger.error(error.message, error.stack)
+        const local = await db.products.toArray()
+        return sortNewestFirst(local).map(productFromDTO)
+    }
+}
+```
+
+### Android Sale repository (shared-data module)
+
+The Android `SaleOfflineFirstRepository` in `shared-data` handles writes with explicit structured logging and a retry loop:
+
+```kotlin
+override suspend fun save(item: Sale) {
+    val saleDto = item.toDto()
+    Log.i(TAG, "event=sale_save_local_start saleId=${saleDto.id} userId=${saleDto.userId}")
+    bd.insert(saleDto)                        // 1. local write — always succeeds
+    Log.i(TAG, "event=sale_save_local_success saleId=${saleDto.id}")
+    runCatching {
+        Log.i(TAG, "event=sale_save_remote_push_start saleId=${saleDto.id}")
+        pushWithRetry(net, saleDto)           // 2. remote push — best-effort
+        Log.i(TAG, "event=sale_save_remote_push_success saleId=${saleDto.id}")
+    }.onFailure { error ->
+        Log.w(TAG, "event=sale_save_remote_push_failed saleId=${saleDto.id} cause=${error.message}", error)
+        // failure is logged but NOT re-thrown; the sale survives locally
+    }
+}
+```
+
+The remote push is wrapped in `runCatching`, so a network failure does not roll back the local write. The sale remains in Room and is picked up by the next sync pass.
+
+---
+
+## Repository Layer Summary
+
+<Steps>
+  <Step title="Local operation">
+    The DAO (Room) or Dexie table receives the write immediately. For reads, the local table is queried as the fallback.
+  </Step>
+  <Step title="Remote operation">
+    The net repository calls Appwrite. For reads, the response is bulk-put into the local store. For writes, the result is inserted/updated locally to mirror the canonical remote state.
+  </Step>
+  <Step title="Reconciliation">
+    On failure the local store is used as-is for reads. For writes that failed remotely the record stays in the local pending set until `SyncSalesCaseUse` reconciles it.
+  </Step>
+</Steps>
+
+---
+
+## SyncSalesCaseUse: Draining the Pending Queue
+
+`SyncSalesCaseUse` in `shared-sale` is the entry point for explicit sync triggers:
+
+```kotlin
+class SyncSalesCaseUse(
+    private val repository: SaleRepository
+) {
+    suspend operator fun invoke(userId: String): Result<Unit> =
+        repository.sync(userId)
+}
+```
+
+The underlying `SaleOfflineFirstRepository.sync()` in `shared-data` implements a four-step reconciliation algorithm:
+
+```kotlin
+override suspend fun sync(userId: String): Result<Unit> = runCatching {
+    val localAllSales      = bd.getAll()
+    val localTargetUser    = localAllSales.filter { it.userId == userId }
+    val localOtherUsers    = localAllSales.filter { it.userId != userId }
+
+    val remoteBeforePush   = net.getAll(userId)
+
+    // 1. Compute pending: local records absent from remote
+    val pendingQueue = resolvePendingLocals(localTargetUser, remoteBeforePush)
+
+    // 2. Push each pending sale with up to 3 retries
+    val failedToPush = pendingQueue.filter { sale ->
+        runCatching { pushWithRetry(net, sale) }.isFailure
+    }
+
+    // 3. Fetch authoritative remote state after push
+    val remoteAfterPush = net.getAll(userId)
+
+    // 4. Merge: remote wins; failed-to-push sales kept locally
+    val merged = mergeSyncResult(remoteAfterPush, failedToPush)
+    bd.replaceAll(localOtherUsers + merged)
+}
+```
+
+The `pushWithRetry` helper attempts up to `MAX_SYNC_RETRIES` (3) times before giving up:
+
+```kotlin
+private suspend fun pushWithRetry(
+    net: SaleNetRepository,
+    sale: SaleDto,
+    maxRetries: Int = MAX_SYNC_RETRIES
+) {
+    var lastError: Throwable? = null
+    repeat(maxRetries) { attempt ->
+        runCatching { net.upsert(sale) }
+            .onSuccess { return }
+            .onFailure { error ->
+                lastError = error
+                Log.w(TAG, "event=sale_push_retry_failed saleId=${sale.id} " +
+                           "attempt=${attempt + 1} cause=${error.message}")
+            }
+    }
+    throw (lastError ?: IllegalStateException("No se pudo sincronizar la venta ${sale.id}"))
+}
+```
+
+---
+
+## Conflict Strategy
+
+The reconciliation policy is **remote wins for records that exist on both sides**. The `mergeSyncResult` function builds a map keyed by sale ID, starting from the remote set, and only adds failed-pending sales for IDs that do not already exist remotely:
+
+```kotlin
+internal fun mergeSyncResult(
+    remoteSales: List<SaleDto>,
+    failedPendingSales: List<SaleDto>
+): List<SaleDto> {
+    val mergedById = remoteSales.associateBy { it.id }.toMutableMap()
+    failedPendingSales.forEach { failedSale ->
+        if (failedSale.id !in mergedById) {
+            mergedById[failedSale.id] = failedSale  // keep pending locally if absent remotely
+        }
+    }
+    return mergedById.values.toList()
+}
+```
+
+This means that if a sale was modified on both the device and the server between sync passes, the server version takes precedence.
+
+<Warning>
+Conflict resolution is remote-wins at the record level. Field-level merging (last-write-wins per field) is not implemented in the current MVP. A sale modified locally while offline may have local changes overwritten when sync runs.
+</Warning>
+
+---
+
+## What Happens When Appwrite Is Unreachable
+
+| Operation | Behaviour when offline |
+|-----------|----------------------|
+| `getAllSales()` / `getAll()` | Returns full local cache |
+| `getByUser(userId)` | Filters local Dexie/Room store by `user_id` |
+| `create(sale)` | Local write succeeds; remote push fails; sale queued for next sync |
+| `updateVerified(id, state)` | Throws; caller must handle and surface error to UI |
+| `sync(userId)` | Local records without a matching remote ID remain in the pending set |
+
+The application surfaces different UX states (loading, error, notice) through immutable `StateFlow` on Android and Svelte stores on web, so the UI always reflects the current connectivity status without crashing.
+
+<Tip>
+The offline-first design was a deliberate architectural choice shaped by the Cuban internet context. Home and mobile connectivity in Cuba is frequently unavailable for hours at a time. Designing around intermittent connectivity from the beginning — rather than treating it as an edge case — makes the app genuinely usable in day-to-day conditions, not just when the network cooperates.
+</Tip>
+
+<Note>
+**Known limitation from the README:** Conflict policies are not fully hardened across all features in the current MVP. The sale feature has the most complete sync logic; other features (categories, products, exchange rates) use simpler remote-wins full-replace strategies in their `sync()` methods, which may discard locally-accumulated state. Hardening conflict resolution across all features is tracked as technical debt for a future core.
+</Note>

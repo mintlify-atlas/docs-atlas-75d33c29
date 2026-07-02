@@ -1,0 +1,330 @@
+---
+title: "Real-Time Event Architecture with Pusher and Appwrite"
+sidebarTitle: "Realtime Sync"
+description: "AlejoTaller uses Pusher Channels for real-time sale verification events and Appwrite Realtime for operator sync, creating a multi-layer reactive update system."
+---
+
+AlejoTaller's realtime layer is deliberately split across two technologies. Appwrite Realtime handles operator-side collection subscriptions, giving the operator app live visibility into incoming orders. Pusher Channels handles customer-facing verification events, pushing `sale:confirmed` and `sale:rejected` notifications to Android and web clients the moment an operator acts on a sale. The two layers serve different roles, connect to different audiences, and are intentionally isolated from each other.
+
+---
+
+## Two Realtime Layers
+
+### Layer 1 — Pusher Channels: customer verification events
+
+Pusher is used for the most latency-sensitive step in the sale lifecycle: telling a waiting customer that their order has been confirmed or rejected. Every customer subscribes to a personal channel named after their user ID:
+
+```
+sale-verification-{userId}
+```
+
+Two events flow on this channel:
+
+| Event name | Meaning |
+|---|---|
+| `sale:confirmed` | Operator verified the sale; order is accepted |
+| `sale:rejected` | Operator rejected the sale; order will not be processed |
+
+Both events carry the same payload shape, built inside `PusherSaleRealtimePublisher`:
+
+```typescript
+await this.pusher.trigger(channel, eventName, {
+    saleId: command.saleId,
+    userId: command.userId,
+    decision: command.decision,
+    timestamp: Date.now().toString(),
+    amount: command.amount ?? null,
+    productCount: command.productCount ?? null,
+    type: eventName,
+    cause: command.cause ?? null   // populated on rejection
+})
+```
+
+### Layer 2 — Appwrite Realtime: operator collection sync
+
+The operator app (AlejoTallerScan) subscribes to changes on the Appwrite sales collection through the `RealtimeSyncGateway` interface. When a new sale arrives in Appwrite, the operator app is notified in real time without polling. The gateway also carries a promotion channel, allowing the customer apps to receive promotional notifications through the same subscription mechanism.
+
+---
+
+## Why Pusher Instead of Direct Appwrite Realtime for Customers
+
+Three concrete reasons justify routing customer verification events through Pusher rather than letting clients subscribe to Appwrite Realtime directly:
+
+1. **Secret isolation.** Pusher application secrets (app ID, key, secret) never leave the server. Embedding them in an APK or JavaScript bundle would expose them to extraction. The `alejo_publisher` microservice is the only process that holds Pusher signing credentials.
+
+2. **Timestamp signing reliability.** Pusher's HTTP API authentication uses server-side timestamps. A mobile device with a drifted or incorrect clock would produce invalid signatures when calling the Pusher REST API directly. Routing through a server-side function eliminates this failure mode entirely.
+
+3. **Auditability.** Every publish event passes through `alejo_publisher`, creating a single chokepoint that can be logged, rate-limited, and hardened independently of the clients.
+
+<Note>
+The README explicitly documents this decision: *"la operadora ya no firma directamente contra Pusher — la function `alejo_publisher` se encarga de publicar, el flujo no continua si Appwrite no confirma el cambio esperado, menos fragilidad por reloj del dispositivo, secretos de Pusher fuera del APK."*
+</Note>
+
+---
+
+## Channel and Event Reference
+
+```
+Channel:  sale-verification-{userId}
+Events:   sale:confirmed
+          sale:rejected
+```
+
+The channel name is constructed at publish time in `PusherSaleRealtimePublisher`:
+
+```typescript
+const channel = `sale-verification-${command.userId}`
+const eventName =
+    command.decision === "confirmed" ? "sale:confirmed" : "sale:rejected"
+```
+
+On the Android client, `RealTimeManagerImpl` builds the channel name by appending the authenticated user ID to the configured channel prefix:
+
+```kotlin
+val saleChannelPrefix = BuildConfig.PUSHER_SALE_CHANNEL
+    .orFallback(DEFAULT_SALE_CHANNEL_PREFIX, "PUSHER_SALE_CHANNEL")
+val saleChannel = "$saleChannelPrefix-$userId"  // e.g. "sale-verification-abc123"
+```
+
+The client subscribes to both legacy event names and the canonical ones for backwards compatibility:
+
+```kotlin
+private val SALE_EVENTS = listOf(
+    "sale.success", "sale.error",   // legacy
+    "sale:confirmed", "sale:rejected" // canonical
+)
+```
+
+---
+
+## Domain Use Cases for Realtime (shared-sale)
+
+The realtime behaviour on Android and the shared module is encapsulated in three dedicated use cases.
+
+### SubscribeRealtimeSyncCaseUse
+
+Sets up the Pusher subscription for a given user. It delegates to `RealtimeSyncGateway`, which is implemented by `RealTimeManagerImpl` (Android) using `PusherManager`:
+
+```kotlin
+class SubscribeRealtimeSyncCaseUse(
+    private val gateway: RealtimeSyncGateway
+) {
+    operator fun invoke(
+        userId: String,
+        onConnect: () -> Unit,
+        onDisconnect: () -> Unit,
+        onSaleEvent: (SaleRealtimeEvent) -> Unit,
+        onPromotion: (Promotion) -> Unit = {}
+    ) {
+        gateway.subscribe(
+            userId = userId,
+            onConnect = onConnect,
+            onDisconnect = onDisconnect,
+            onSaleEvent = onSaleEvent,
+            onPromotion = onPromotion
+        )
+    }
+
+    fun unsubscribeAll() {
+        gateway.unsubscribeAll()
+    }
+}
+```
+
+### InterpretSaleRealtimeEventCaseUse
+
+Converts a raw `SaleRealtimeEvent` into a list of `SaleRealtimeCommand` objects that describe what the UI and notification layer should do:
+
+```kotlin
+class InterpretSaleRealtimeEventCaseUse {
+    operator fun invoke(event: SaleRealtimeEvent): List<SaleRealtimeCommand> {
+        if (event.saleId.isEmpty() || event.userId.isEmpty()) return emptyList()
+        return if (event.isSuccess) {
+            listOf(
+                SaleRealtimeCommand.InAppMessage(
+                    message = "Pedido ${event.saleId} confirmado",
+                    kind = RealtimeMessageKind.Success
+                ),
+                SaleRealtimeCommand.PushNotification(
+                    title = "Pedido confirmado",
+                    body = "Tu pedido ${event.saleId} fue confirmado"
+                )
+            )
+        } else {
+            listOf(
+                SaleRealtimeCommand.InAppMessage(
+                    message = "Pedido ${event.saleId} rechazado: ${event.cause ?: "sin detalles"}",
+                    kind = RealtimeMessageKind.Error
+                ),
+                SaleRealtimeCommand.PushNotification(
+                    title = "Pedido con incidencia",
+                    body = "Revisa el pedido ${event.saleId}"
+                )
+            )
+        }
+    }
+}
+```
+
+`SaleRealtimeCommand` is a sealed interface with two implementations — `InAppMessage` and `PushNotification` — so callers can handle each independently.
+
+### UpdateSaleVerificationFromRealtimeCaseUse
+
+Applies the realtime event result to the local Room (Android) database, keeping local state consistent with what the operator confirmed:
+
+```kotlin
+class UpdateSaleVerificationFromRealtimeCaseUse(
+    private val repository: SaleRepository
+) {
+    suspend operator fun invoke(
+        saleId: String,
+        isSuccess: Boolean
+    ): Result<Unit> = runCatching {
+        val currentSale = repository.getById(saleId)
+        val nextState = if (isSuccess) BuyState.VERIFIED else BuyState.DELETED
+        if (currentSale.verified == nextState) return@runCatching  // already up-to-date
+
+        repository.save(currentSale.copy(verified = nextState))
+    }
+}
+```
+
+The guard `if (currentSale.verified == nextState) return@runCatching` prevents duplicate writes when the same event is received more than once — a meaningful safety net given that Pusher at-least-once delivery can result in duplicate events.
+
+---
+
+## PusherSaleRealtimePublisher
+
+The publisher microservice (`alejo_publisher`) instantiates a server-side Pusher SDK client and routes all publish calls through `PusherSaleRealtimePublisher`:
+
+```typescript
+export class PusherSaleRealtimePublisher implements SaleRealtimePublisher {
+    constructor(private readonly pusher: Pusher) {}
+
+    async publishSaleVerification(command: PublishSaleVerificationCommand): Promise<{
+        channel: string
+        eventName: string
+    }> {
+        const channel = `sale-verification-${command.userId}`
+        const eventName =
+            command.decision === "confirmed" ? "sale:confirmed" : "sale:rejected"
+
+        await this.pusher.trigger(channel, eventName, {
+            saleId: command.saleId,
+            userId: command.userId,
+            decision: command.decision,
+            timestamp: Date.now().toString(),
+            amount: command.amount ?? null,
+            productCount: command.productCount ?? null,
+            type: eventName,
+            cause: command.cause ?? null
+        })
+
+        return { channel, eventName }
+    }
+}
+```
+
+Before reaching this publisher, the HTTP layer validates the command:
+
+```typescript
+function validateCommand(command: PublishSaleVerificationCommand): void {
+    if (!command.saleId?.trim())
+        throw new Error("saleId es obligatorio")
+    if (!command.userId?.trim())
+        throw new Error("userId es obligatorio")
+    if (command.decision !== "confirmed" && command.decision !== "rejected")
+        throw new Error("decision debe ser confirmed o rejected")
+}
+```
+
+Validation errors return HTTP 400; unexpected errors return HTTP 500. The endpoint is protected by a Bearer token checked before the handler runs:
+
+```typescript
+app.post("/sale-verification/publish", requireApiKey, async (req, res, next) => {
+    const command = req.body as PublishSaleVerificationCommand
+    const result = await publishSaleVerificationUseCase.execute(command)
+    res.json({ ok: true, ...result })
+})
+```
+
+---
+
+## Immutable UI State Pattern
+
+ViewModels on Android expose `StateFlow<T>` — the UI layer collects the flow and re-renders automatically. No manual "refresh UI" calls are needed. The flow of a realtime event from Pusher to the screen looks like:
+
+1. `PusherManager.subscribe()` receives the raw JSON payload
+2. `SaleEventProcessor` parses the envelope into a `SaleRealtimeEvent`
+3. The ViewModel calls `InterpretSaleRealtimeEventCaseUse` and `UpdateSaleVerificationFromRealtimeCaseUse`
+4. `SaleRepository.save()` updates Room
+5. `SaleDao.getAllFlow()` (a Room `Flow`) emits the updated list
+6. The ViewModel's `StateFlow` — derived from that Room flow — emits the new state
+7. Jetpack Compose recomposes the affected screen
+
+On the web client, equivalent reactivity is provided by Svelte stores. When `updateVerified` writes a new `SaleDTO` to Dexie, a Svelte store subscribed to that Dexie query emits the updated array and the component re-renders.
+
+---
+
+## The Publisher Microservice Role
+
+`alejo_publisher` is an Express HTTP service deployed on Render. It has exactly one business endpoint:
+
+```
+POST /sale-verification/publish
+Authorization: Bearer <PUBLISHER_API_KEY>
+
+{
+  "saleId": "abc123",
+  "userId": "user456",
+  "decision": "confirmed",   // or "rejected"
+  "amount": 1500,
+  "productCount": 3,
+  "cause": null
+}
+```
+
+It requires five environment variables to start:
+
+```bash
+PUBLISHER_API_KEY=...
+PUSHER_APP_ID=...
+PUSHER_KEY=...
+PUSHER_SECRET=...
+PUSHER_CLUSTER=...
+```
+
+If any of these is missing the process throws at startup, preventing a misconfigured deployment from silently discarding events.
+
+---
+
+## Full Realtime Chain
+
+```mermaid
+sequenceDiagram
+    participant Op as Operator App<br/>(AlejoTallerScan)
+    participant AW as Appwrite
+    participant Pub as alejo_publisher
+    participant PS as Pusher Channels
+    participant And as Android Client
+    participant Web as Web Client
+
+    Op->>AW: Update buy_state → VERIFIED / DELETED
+    AW-->>Op: Confirm document change
+    Op->>Pub: POST /sale-verification/publish<br/>{ saleId, userId, decision }
+    Pub->>Pub: validateCommand()
+    Pub->>PS: pusher.trigger(sale-verification-{userId},<br/>sale:confirmed / sale:rejected, payload)
+    PS-->>And: Event on channel sale-verification-{userId}
+    PS-->>Web: Event on channel sale-verification-{userId}
+    And->>And: InterpretSaleRealtimeEventCaseUse
+    And->>And: UpdateSaleVerificationFromRealtimeCaseUse → Room
+    Web->>Web: Svelte store update → Dexie
+```
+
+<Note>
+The operator app only calls `alejo_publisher` **after** Appwrite confirms the `buy_state` change. If the Appwrite write fails, the publisher is never called and no Pusher event fires. This prevents clients from receiving a confirmation event for a sale that was not actually persisted.
+</Note>
+
+<Tip>
+The `cause` field in the event payload is populated for `sale:rejected` events to help the customer understand why their order was not processed. It surfaces in the `InAppMessage` command as `"Pedido {id} rechazado: {cause}"`.
+</Tip>

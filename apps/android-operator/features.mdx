@@ -1,0 +1,166 @@
+---
+title: "Operator App Features: QR Scan, Verify, and Sync"
+sidebarTitle: "Features"
+description: "Breakdown of AlejoTallerScan features: QR barcode scanning, sale verification and rejection, local history, offline pending sync, and real-time conflict notifications."
+---
+
+AlejoTallerScan is composed of discrete feature modules, each following the same layered structure — `data`, `domain`, and `presentation`. This page walks through each feature, the key domain classes behind it, and how they connect to the broader monorepo flow.
+
+## Authentication
+
+Operators log in through `OperatorAuthViewModel`, which delegates to `AuthOperatorUserCaseUse` from the `shared-auth` module. After login, access is gated by the `hasOperatorAccess()` extension function defined on the `OperatorAccess` entity:
+
+```kotlin
+// shared-auth — OperatorAccess.kt
+private val OPERATOR_ALLOWED_ROLES = setOf("operator", "admin", "administrator", "owner")
+
+fun String?.hasOperatorAccess(): Boolean = normalizeBusinessRole() in OPERATOR_ALLOWED_ROLES
+```
+
+Only accounts whose role normalizes to one of the four allowed values can proceed past the login screen. Any other Appwrite account is denied access at the domain layer before any sale data is fetched.
+
+## QR Code Scanning
+
+The `OperatorQrScannerSection` composable hosts a `CameraX` preview bound to `ML Kit Barcode Scanning`. When a barcode frame is decoded, the raw string is forwarded to `ParseSaleScanPayloadCaseUse`, which attempts to extract a `saleId` using several strategies in order:
+
+```kotlin
+// ParseSaleScanPayloadCaseUse.kt (simplified)
+val candidate = when {
+    !queryId.isNullOrBlank()        -> queryId          // ?id=, ?saleId=, ?reservationId=
+    !jsonId.isNullOrBlank()         -> jsonId           // {"saleId":"..."}
+    !pipeSeparatedId.isNullOrBlank()-> pipeSeparatedId  // saleId|userId|amount|...
+    normalized.startsWith("http")   -> normalized       // trailing URL segment
+    else                            -> normalized       // fallback: last path/param segment
+}
+```
+
+The resulting `ParsedSaleQrPayload` carries `saleId`, optional `userId`, optional `amount`, and a list of `ParsedSaleQrItem` records (each with `productId`, `quantity`, and optional `unitPrice`). On a successful parse, `OperatorSalesViewModel.loadSaleByCode()` fetches the full sale from Appwrite and caches it locally in Room.
+
+<Tip>
+  The scanner is tolerant of multiple QR encoding formats. It handles plain IDs, URL query strings, JSON objects, and pipe-delimited payloads without requiring QR re-generation.
+</Tip>
+
+## Manual Order Loading
+
+When a QR code is unavailable or unreadable, operators can search for reservations directly from the `OperatorReservationsScreen`. `SearchReservationsCaseUse` queries `SaleNetRepository` using one of four `ReservationSearchField` values:
+
+```kotlin
+enum class ReservationSearchField {
+    SALE_ID,
+    USER_ID,
+    CUSTOMER_NAME,
+    DATE
+}
+```
+
+Results can be filtered by status using `ReservationStatusFilter`:
+
+```kotlin
+enum class ReservationStatusFilter(val state: BuyState?) {
+    ALL(null),
+    PENDING(BuyState.UNVERIFIED),
+    CONFIRMED(BuyState.VERIFIED),
+    REJECTED(BuyState.DELETED)
+}
+```
+
+Selecting a result from the list calls `OperatorSalesViewModel.selectSale()`, which loads it into `OperatorSalesUiState.selectedSale` and navigates to the confirmation screen — the same path taken after a successful QR scan.
+
+## Sale Verification Flow
+
+Once a sale is loaded, the operator reviews its details on the confirmation screen and chooses to confirm or reject. The `OperatorSalesViewModel` executes the following sequence for either decision:
+
+1. **Guard check** — if `sale.verified != BuyState.UNVERIFIED`, the sale was already processed; a notice is shown and no remote call is made.
+2. **Appwrite update** — `UpdateSaleVerificationFromRealtimeCaseUse` (shared-sale) writes the new `buy_state`: `VERIFIED` for confirmation, `DELETED` for rejection.
+3. **Remote state verification** — the app re-fetches the sale from Appwrite and asserts the remote `buy_state` matches the expected value. If it does not match, the local record is rolled back and an error is surfaced.
+4. **Publisher call** — `NotifyOperatorSaleDecisionCaseUse` invokes `PublisherSaleRealtimeNotifier`, which sends an HTTP `POST` to `alejo_publisher`:
+
+```kotlin
+// PublisherSaleRealtimeNotifier.kt
+val payload = PublisherSaleDecisionRequest(
+    saleId    = sale.id,
+    userId    = sale.userId,
+    decision  = if (isSuccess) "confirmed" else "rejected",
+    amount    = sale.amount,
+    productCount = sale.products.sumOf { it.quantity },
+    cause     = if (isSuccess) null else "rejected_by_operator"
+)
+// POST ${PUBLISHER_BASE_URL}/sale-verification/publish
+// Authorization: Bearer ${PUBLISHER_API_KEY}
+```
+
+5. **Local record** — `RegisterOperatorSaleRecordCaseUse` writes an `OperatorSaleRecord` to the Room database with the resulting action (`CONFIRMED` or `REJECTED`).
+
+<Warning>
+  Step 3 is not optional. If Appwrite does not reflect the expected state, the app stops the flow, rolls back the local sale to its original state, and does **not** call `alejo_publisher`. Calling the publisher on an unconfirmed state change would broadcast a false event to all connected clients.
+</Warning>
+
+The payment method shown to the operator during confirmation is represented by `OperatorPaymentMethod`:
+
+```kotlin
+enum class OperatorPaymentMethod {
+    CASH,
+    DIRECT_SETTLEMENT
+}
+```
+
+## Local Operator History
+
+Every completed confirm or reject action is persisted locally in Room via `RegisterOperatorSaleRecordCaseUse`. The domain entity stored is:
+
+```kotlin
+data class OperatorSaleRecord(
+    val id: Long = 0,
+    val saleId: String,
+    val customerName: String?,
+    val userId: String,
+    val amount: Double,
+    val saleDate: String,
+    val action: OperatorSaleRecordAction, // CONFIRMED or REJECTED
+    val stateAfter: String,
+    val recordedAtEpochMillis: Long,
+    val itemsSummary: List<String>
+)
+```
+
+`ObserveOperatorSaleRecordsCaseUse` exposes these records as a Flow consumed by `OperatorSaleRecordsViewModel` and displayed in `OperatorSaleRecordsScreen`. The history is fully local and persists across sessions and app restarts — it is never cleared automatically.
+
+## Pending Sync
+
+`SyncPendingOperatorSalesCaseUse` runs on the IO dispatcher and handles the case where locally cached sales still show `UNVERIFIED` — which can happen if a prior sync attempt was interrupted by a connectivity failure:
+
+```kotlin
+// SyncPendingOperatorSalesCaseUse.kt (simplified)
+val localPendingSales = saleDao.getAll()
+    .filter { it.verified == BuyState.UNVERIFIED.name }
+
+localPendingSales.forEach { localSale ->
+    saleNetRepository.getById(localSale.id).onSuccess { remoteSale ->
+        if (remoteSale.verified != localSale.verified) {
+            saleDao.insert(remoteSale)  // update local cache
+            if (remoteSale.verified == BuyState.VERIFIED.name) {
+                notificationService.showSaleVerified(
+                    saleId = remoteSale.id,
+                    customerName = remoteSale.customerName
+                )
+            }
+        }
+    }
+}
+```
+
+Each pending sale is compared against its remote counterpart. If the remote state has advanced, the local record is updated and, when the remote state is `VERIFIED`, a local notification is posted.
+
+<Note>
+  `SyncPendingOperatorSalesCaseUse` is distinct from `SyncSalesCaseUse` (shared-sale). The shared use case syncs the general sale list for the customer-facing apps; the operator-specific version focuses on locally cached `UNVERIFIED` sales that belong to the operator's session.
+</Note>
+
+## Local Notifications
+
+`OperatorSaleSyncNotificationService` (implementing `OperatorSyncNotificationService`) posts a local Android notification when `SyncPendingOperatorSalesCaseUse` detects that a locally pending sale has already been verified remotely — typically because another operator processed the same reservation first.
+
+The app requests `POST_NOTIFICATIONS` permission at the manifest level. On first launch on Android 13+, the user is prompted for notification permission. The notification informs the operator of the `saleId` and the customer name, preventing them from attempting to re-process a sale that is no longer `UNVERIFIED`.
+
+## Realtime Subscription
+
+The app uses Appwrite's realtime subscription to observe remote sale changes. `SubscribeRealtimeSyncCaseUse` (shared-sale) opens a channel and forwards incoming events to `InterpretSaleRealtimeEventCaseUse` and `UpdateSaleVerificationFromRealtimeCaseUse`, which update the local Room cache. This keeps the operator's view of recent sales fresh without requiring manual refresh, and makes conflict detection faster in environments with multiple active operators.

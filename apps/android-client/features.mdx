@@ -1,0 +1,270 @@
+---
+title: "Android Client Feature Set and Use Cases"
+sidebarTitle: "Features"
+description: "Detailed breakdown of the AlejoTaller Android client features: authentication, product catalog, cart management, purchase flow, and real-time sale verification."
+---
+
+The Android client is organised into self-contained feature modules, each following the same `data / domain / presentation / di` layering. This page documents what each feature does and which use cases drive its business logic. All use-case names below are taken directly from the source tree.
+
+---
+
+## Authentication (`feature/auth`)
+
+Authentication is the entry point for every customer session. The feature delegates all identity operations to the Appwrite SDK and exposes session state through a `StateFlow`-backed ViewModel so the rest of the app can react to sign-in and sign-out events.
+
+### Capabilities
+
+- Email and password login
+- Account creation with email/password
+- Custom registration flow
+- Google Sign-In via Android Credential Manager
+- Session persistence across app restarts
+- User profile updates (name, password, phone, photo URL)
+- Account verification status check
+
+### Use Cases
+
+| Use Case | Responsibility |
+|---|---|
+| `AuthUserCaseUse` | Authenticate an existing user by email and password via Appwrite |
+| `CreateAccountUseCase` | Register a new customer account |
+| `CustomRegisterCaseUse` | Extended registration with additional profile data |
+| `AuthWithGoogleCaseUse` | Initiate Google Sign-In using the Android Credential Manager |
+| `RegisterWithGoogleUseCase` | Complete registration using a Google credential |
+| `CloseSessionCaseUse` | Sign out and clear the local session |
+| `GetCurrentUserInfoCaseUse` | Retrieve the authenticated user's profile from Appwrite |
+| `IsUserVerifiedUseCase` | Check whether the account has been email-verified |
+| `VerifyUserUseCase` | Send or process the email verification request |
+| `UpdateUserNameUseCase` | Update the customer's display name |
+| `UpdateUserPassCaseUse` | Change the account password |
+| `UpdateUserPhoneCaseUse` | Update the customer's phone number |
+| `UpdateUserPhotoUrlCaseUse` | Store a new profile photo URL |
+
+<Tip>
+Session state is maintained by the `shared-auth` module so the operator app and the client app share the same authentication contracts without duplicating logic.
+</Tip>
+
+---
+
+## Product Catalog (`feature/product`)
+
+The product feature gives customers access to the full electronics inventory. Products are cached locally by Room so the catalog remains browsable even without network access.
+
+### Capabilities
+
+- Observe the full product list as a reactive `Flow`
+- Retrieve a single product by ID for detail screens
+- Sync the remote Appwrite catalog to the local Room database
+- Category-filtered browsing (driven by the category feature)
+
+### Use Cases
+
+| Use Case | Responsibility |
+|---|---|
+| `ObserveProductsCaseUse` | Emit the product list as a `Flow` from the local Room DAO |
+| `GetProductByIdCaseUse` | Fetch a single product entity by its ID from the local cache |
+| `SyncProductCaseUse` | Pull the latest product data from Appwrite and write it to Room |
+
+<Note>
+Products are the primary offline-first entity. `SyncProductCaseUse` should be triggered on app start or when connectivity is restored to keep the local cache current with the Appwrite collection.
+</Note>
+
+---
+
+## Categories (`feature/category`)
+
+The category feature provides the taxonomy used to filter the product catalog. Like products, categories are cached locally for offline availability.
+
+### Capabilities
+
+- Observe the full category list as a reactive `Flow`
+- Sync the remote Appwrite category collection to Room
+
+### Use Cases
+
+| Use Case | Responsibility |
+|---|---|
+| `ObserveCategoriesCaseUse` | Emit the category list as a `Flow` from the local Room DAO |
+| `SyncCategoriesCaseUse` | Pull categories from Appwrite and persist them locally |
+
+---
+
+## Sales & Cart (`feature/sale` + `shared-sale`)
+
+The sale feature is the commercial core of the app. It handles cart state, purchase registration, payment initiation, and the offline-first persistence of every order. The foundational domain types and reusable use cases live in the `shared-sale` module so the web client and Android operator share the same definitions.
+
+### Sale Domain Types
+
+```kotlin
+// shared-sale
+data class Sale(
+    val id: String,
+    val date: LocalDate,
+    val amount: Double,
+    val currency: Currency,
+    val verified: BuyState,
+    val products: List<SaleItem>,
+    val userId: String,
+    val customerName: String? = null,
+    val deliveryType: DeliveryType? = null,
+    val deliveryAddress: DeliveryAddress? = null
+)
+
+enum class BuyState    { UNVERIFIED, VERIFIED, DELETED }
+enum class DeliveryType { PICKUP, DELIVERY }
+enum class Currency    { CUP, USD, MLC }
+```
+
+### BuyState Lifecycle
+
+```
+UNVERIFIED  ──► VERIFIED   (operator confirms)
+            └─► DELETED    (operator rejects)
+```
+
+A sale starts as `UNVERIFIED` the moment the customer submits it. It transitions to `VERIFIED` or `DELETED` only when a real-time event from the operator is received and reconciled locally.
+
+### Use Cases in `app/` (`feature/sale/domain/caseUse`)
+
+| Use Case | Responsibility |
+|---|---|
+| `InitiatePaymentCaseUse` | Orchestrates the full purchase registration flow: assigns a unique ID, notifies the shop via Telegram, persists the sale locally (`UNVERIFIED`), and requests a checkout URL from the payment gateway. Returns a `PaymentInitResult` containing the `saleId` and `checkoutUrl`. |
+
+```kotlin
+// InitiatePaymentCaseUse — payment-backed purchase flow
+class InitiatePaymentCaseUse(
+    private val repository: SaleRepository,
+    private val notificationUserProvider: SaleNotificationUserProvider,
+    private val telegramNotificator: TelegramNotificator,
+    private val paymentGateway: PaymentGateway
+) {
+    suspend operator fun invoke(
+        sale: Sale,
+        paymentChannel: PaymentChannel
+    ): Result<PaymentInitResult>
+}
+```
+
+### Use Cases in `shared-sale`
+
+| Use Case | Responsibility |
+|---|---|
+| `RegisterNewSaleCauseUse` | Registers a new sale without online payment: assigns ID, notifies via Telegram, saves to the repository |
+| `ObserveAllSalesCaseUse` | Emits the customer's sale list as a `Flow` from the local store |
+| `GetSalesByIdCaseUse` | Retrieves a single sale by ID |
+| `SyncSalesCaseUse` | Reconciles local sale records with the remote Appwrite collection |
+| `UpdateDeliveryTypeCaseUse` | Updates the delivery preference (`PICKUP` or `DELIVERY`) on a verified sale |
+
+<Warning>
+If the payment gateway returns an error, `InitiatePaymentCaseUse` does **not** roll back the local save or the Telegram notification. The shop can manage the order manually from the Telegram notification, and the sale remains in local storage as `UNVERIFIED`.
+</Warning>
+
+---
+
+## Real-Time Verification (`shared-sale` + infrastructure)
+
+Real-time sale verification is the mechanism that closes the loop between the operator's action and the customer's in-app feedback. It is implemented as a collaboration between `shared-sale` use cases and the app's Pusher infrastructure layer.
+
+### Channel Naming
+
+```
+sale-verification-{userId}
+```
+
+Each authenticated customer subscribes to a personal Pusher channel scoped to their user ID. This ensures that verification events are routed only to the correct device.
+
+### Events
+
+| Event name | Meaning |
+|---|---|
+| `sale:confirmed` | The operator accepted the order; `BuyState` → `VERIFIED` |
+| `sale:rejected` | The operator rejected the order; `BuyState` → `DELETED` |
+
+### Use Cases
+
+| Use Case | Responsibility |
+|---|---|
+| `SubscribeRealtimeSyncCaseUse` | Subscribes to the `RealtimeSyncGateway` for the given `userId`, forwarding sale events and promotional notifications to caller-provided lambdas |
+| `InterpretSaleRealtimeEventCaseUse` | Pure domain function that converts a `SaleRealtimeEvent` into a list of `SaleRealtimeCommand` actions (in-app message + push notification) |
+| `UpdateSaleVerificationFromRealtimeCaseUse` | Fetches the local sale by ID and writes the new `BuyState` (`VERIFIED` or `DELETED`) only if the state has actually changed |
+
+```kotlin
+// InterpretSaleRealtimeEventCaseUse — pure, no dependencies
+class InterpretSaleRealtimeEventCaseUse {
+    operator fun invoke(event: SaleRealtimeEvent): List<SaleRealtimeCommand>
+}
+
+// Produces either:
+//   SaleRealtimeCommand.InAppMessage  — shown in the UI
+//   SaleRealtimeCommand.PushNotification — triggers a local notification
+```
+
+```kotlin
+// UpdateSaleVerificationFromRealtimeCaseUse — persists the new state
+class UpdateSaleVerificationFromRealtimeCaseUse(
+    private val repository: SaleRepository
+) {
+    suspend operator fun invoke(saleId: String, isSuccess: Boolean): Result<Unit>
+}
+```
+
+### Processing Pipeline
+
+The app-layer `SaleEventProcessor` handles raw Pusher payloads before handing them to the domain:
+
+1. `SaleEventProcessor` receives the raw `RealtimeEventEnvelope` from the Pusher connection.
+2. It decodes the JSON payload and dispatches either `onSuccess(saleId, userId)` or `onError(saleId, userId, cause)`.
+3. The ViewModel calls `InterpretSaleRealtimeEventCaseUse` to derive UI commands.
+4. `UpdateSaleVerificationFromRealtimeCaseUse` persists the new `BuyState` to Room.
+
+---
+
+## Settings (`feature/settigns`)
+
+The settings feature allows customers to manage their in-app preferences. These are stored locally and influence UI behaviour.
+
+### Capabilities
+
+- Observe and toggle dark mode
+- Toggle haptic feedback
+- Toggle notification preferences
+
+### Use Cases
+
+| Use Case | Responsibility |
+|---|---|
+| `ObserveSettingsCaseUse` | Emits the current settings as a `Flow` |
+| `UpdateDarkModeCaseUse` | Persists the customer's dark mode preference |
+| `UpdateHapticFeedbackCaseUse` | Persists the haptic feedback preference |
+| `UpdateNotificationsCaseUse` | Persists the notification opt-in preference |
+
+---
+
+## Exchange Rates (`feature/exchange`)
+
+The exchange rate feature surfaces currency conversion information to help customers understand prices across the three supported currencies (`CUP`, `USD`, `MLC`).
+
+### Capabilities
+
+- Fetch today's exchange rate from the remote source
+- Read a cached copy when offline
+
+### Use Cases
+
+| Use Case | Responsibility |
+|---|---|
+| `GetTodayExchangeCaseUse` | Retrieves the current exchange rate from the remote data source |
+| `GetCachedTodayExchangeCaseUse` | Returns the last locally cached exchange rate for offline use |
+
+---
+
+## Notifications (`feature/notifications`)
+
+The notifications feature manages promotional messages received through Pusher channels.
+
+### Use Cases
+
+| Use Case | Responsibility |
+|---|---|
+| `ObserveActivePromotionsCaseUse` | Emits the list of active promotions from local storage |
+| `SavePromotionCaseUse` | Persists an incoming promotion received via the real-time gateway |
