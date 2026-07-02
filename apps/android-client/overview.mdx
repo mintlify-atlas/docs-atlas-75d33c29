@@ -1,7 +1,7 @@
 ---
-title: "Android Client App: Customer Shopping Experience"
+title: "AlejoTaller Android Client: Customer Shopping Experience"
 sidebarTitle: "Overview"
-description: "The AlejoTaller Android client is a Kotlin/Compose app for end customers to browse electronics, place orders, and receive real-time sale verification via Pusher."
+description: "Kotlin/Compose Android client for AlejoTaller customers: browse electronics, place orders, and receive real-time sale verification events via Pusher."
 ---
 
 The AlejoTaller Android client app (`app/`) is the primary mobile surface for end customers in the AlejoTaller monorepo. It gives shoppers a complete electronics store experience — from browsing the product catalog and selecting items by category through completing a purchase or reservation — all while remaining functional under unreliable connectivity thanks to its offline-first architecture.
@@ -31,7 +31,7 @@ The Android client occupies the customer-facing end of this chain. It is the sur
 
 The client app is built entirely in Kotlin and targets Android API 26+.
 
-```
+```text
 Kotlin                  — language
 Jetpack Compose         — declarative UI
 Material 3              — design system
@@ -83,7 +83,7 @@ The `alejo_publisher` function is the exclusive Pusher publisher. Pusher secrets
 
 Every feature in the app follows the same three-layer structure:
 
-```
+```text
 feature/{name}/
 ├── data/       — DAOs, DTOs, mappers, repository implementations
 ├── domain/     — entities, repository contracts, use cases

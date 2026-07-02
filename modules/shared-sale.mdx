@@ -1,7 +1,7 @@
 ---
 title: "shared-sale: Shared Sale Domain and Realtime Module"
 sidebarTitle: "shared-sale"
-description: "The shared-sale Kotlin module defines the sale entity, BuyState lifecycle, realtime event use cases, and sync logic shared between the Android client and operator apps."
+description: "shared-sale defines the sale entity, BuyState lifecycle, realtime event use cases, and sync logic for AlejoTaller's Android client and operator apps."
 ---
 
 The `shared-sale` module is the single source of truth for all sale-related business logic across AlejoTaller's Android surfaces. Both the customer app (`app`) and the operator scanner (`alejotallerscan`) depend on this library so that sale creation, local persistence, remote synchronization, and realtime Appwrite event handling are never implemented twice. Concrete infrastructure (Room DAOs, Appwrite `Databases` calls, Pusher gateway) lives in `shared-data`; `shared-sale` exposes only pure domain entities, use cases, and repository/realtime contracts.

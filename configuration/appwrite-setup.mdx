@@ -1,5 +1,5 @@
 ---
-title: "Configuring Appwrite for AlejoTaller"
+title: "Configuring Appwrite Collections and Auth for AlejoTaller"
 sidebarTitle: "Appwrite Setup"
 description: "Step-by-step guide to setting up an Appwrite project with the collections, buckets, and function required by AlejoTaller across Android and web surfaces."
 ---
@@ -96,7 +96,7 @@ Maps to the `Sale` domain entity and drives the sale verification flow.
 | `deliveryAddress` | String | ⬜ | JSON-serialized `DeliveryAddress` object (province, municipality, streets, phone, etc.). |
 
 <Tip>
-Enable **Realtime** on the `sales` collection (Appwrite console → collection → Settings → Realtime). The operator Android app (`alejotallerscan`) subscribes to Appwrite Realtime to detect when `buy_state` changes so it can trigger the publisher microservice and push the confirmation to Pusher.
+Enable **Realtime** on the `sales` collection (Appwrite console → collection → Settings → Realtime). The operator Android app (`alejotallerscan`) subscribes to Appwrite Realtime to detect when `verified` changes so it can trigger the publisher microservice and push the confirmation to Pusher.
 </Tip>
 
 Copy the generated Collection ID to `SALE_TABLE_ID` in `local.properties`.

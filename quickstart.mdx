@@ -1,7 +1,7 @@
 ---
-title: "Get the AlejoTaller Monorepo Running Locally"
+title: "Run the AlejoTaller Monorepo Locally: All Four Surfaces"
 sidebarTitle: "Quickstart"
-description: "Clone AlejoTaller and run the Android apps, Svelte web client, and Publisher microservice locally in under 15 minutes."
+description: "Clone AlejoTaller and start both Android apps, the Svelte web client, and the alejo_publisher microservice with real Appwrite and Pusher credentials."
 ---
 
 AlejoTaller is a monorepo with four independently runnable surfaces. This guide walks you through cloning the repository and starting every surface — the two Android apps, the Svelte web client, and the `alejo_publisher` microservice — with the minimum configuration required to connect them to real Appwrite and Pusher backends.
@@ -38,14 +38,15 @@ The Android build reads sensitive configuration from `local.properties` at the r
 # local.properties
 
 # Appwrite
-APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
+APPWRITE_PROJECT_ENDPOINT=https://cloud.appwrite.io/v1
 APPWRITE_PROJECT_ID=your_project_id
 
 # Publisher microservice URL (use http://10.0.2.2:3000 for the Android emulator)
-PUBLISHER_URL=http://10.0.2.2:3000
+PUBLISHER_BASE_URL=http://10.0.2.2:3000
+PUBLISHER_API_KEY=tallerAlejoTestApiKey
 
-# Pusher public key and cluster (used by the Android client for channel subscription)
-PUSHER_KEY=your_pusher_key
+# Pusher (used by both Android apps for channel subscription and event publishing)
+PUSHER_API_KEY=your_pusher_key
 PUSHER_CLUSTER=mt1
 ```
 
@@ -100,22 +101,19 @@ pnpm dev
 Configure web credentials by creating `web/.env` (or `web/.env.local`) with at minimum:
 
 ```env
-PUBLIC_APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
-PUBLIC_APPWRITE_PROJECT_ID=your_project_id
-PUBLIC_PUSHER_KEY=your_pusher_key
-PUBLIC_PUSHER_CLUSTER=mt1
+VITE_APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
+VITE_APPWRITE_PROJECT_ID=your_project_id
+VITE_PUSHER_KEY=your_pusher_key
+VITE_PUSHER_CLUSTER=mt1
 ```
 
 ### Start the publisher function
 
-In a new terminal, navigate into `function/alejo_publisher/`, copy the example environment file, fill in your Pusher credentials, and start the service:
+In a new terminal, navigate into `function/alejo_publisher/` and create a `.env` file populated with your Pusher credentials:
 
 ```bash
 cd function/alejo_publisher
-cp .env.example .env
 ```
-
-Edit `.env` and populate every variable:
 
 ```env
 PORT=3000

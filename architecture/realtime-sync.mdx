@@ -1,7 +1,7 @@
 ---
 title: "Real-Time Event Architecture with Pusher and Appwrite"
 sidebarTitle: "Realtime Sync"
-description: "AlejoTaller uses Pusher Channels for real-time sale verification events and Appwrite Realtime for operator sync, creating a multi-layer reactive update system."
+description: "How AlejoTaller uses Pusher Channels for customer sale-verification events and Appwrite Realtime for operator sync across two isolated reactive layers."
 ---
 
 AlejoTaller's realtime layer is deliberately split across two technologies. Appwrite Realtime handles operator-side collection subscriptions, giving the operator app live visibility into incoming orders. Pusher Channels handles customer-facing verification events, pushing `sale:confirmed` and `sale:rejected` notifications to Android and web clients the moment an operator acts on a sale. The two layers serve different roles, connect to different audiences, and are intentionally isolated from each other.
@@ -302,7 +302,7 @@ If any of these is missing the process throws at startup, preventing a misconfig
 
 ```mermaid
 sequenceDiagram
-    participant Op as Operator App<br/>(AlejoTallerScan)
+    participant Op as Operator App (AlejoTallerScan)
     participant AW as Appwrite
     participant Pub as alejo_publisher
     participant PS as Pusher Channels
@@ -311,9 +311,10 @@ sequenceDiagram
 
     Op->>AW: Update buy_state → VERIFIED / DELETED
     AW-->>Op: Confirm document change
-    Op->>Pub: POST /sale-verification/publish<br/>{ saleId, userId, decision }
+    Op->>Pub: POST /sale-verification/publish
+    Note over Op,Pub: body: saleId, userId, decision
     Pub->>Pub: validateCommand()
-    Pub->>PS: pusher.trigger(sale-verification-{userId},<br/>sale:confirmed / sale:rejected, payload)
+    Pub->>PS: pusher.trigger(sale-verification-{userId}, sale:confirmed / sale:rejected, payload)
     PS-->>And: Event on channel sale-verification-{userId}
     PS-->>Web: Event on channel sale-verification-{userId}
     And->>And: InterpretSaleRealtimeEventCaseUse

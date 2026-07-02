@@ -1,23 +1,32 @@
 ---
-title: "Offline-First Architecture in AlejoTaller"
+title: "Offline-First Data Architecture: Room, Dexie, and Sync"
 sidebarTitle: "Offline-First"
-description: "AlejoTaller uses an offline-first strategy across all surfaces: local persistence with Room (Android) and Dexie (web) ensures the app works without network connectivity."
+description: "How AlejoTaller uses Room (Android) and Dexie (web) for local-first persistence, with offline fallbacks and sync reconciliation via Appwrite."
 ---
 
-AlejoTaller is designed from the ground up for environments where connectivity cannot be assumed. Every feature persists data locally first, then synchronises with Appwrite when a network path is available. This discipline — **local write first, remote reconciliation later** — means the app remains fully operational even when the backend is unreachable for extended periods.
+AlejoTaller is designed from the ground up for environments where connectivity cannot be assumed. All read operations use a try-remote, fallback-to-local pattern so the app continues to function when Appwrite is unreachable. Write behaviour differs by platform: on Android, sales are persisted to Room first and pushed remotely as a best-effort step; on web, reads fall back to Dexie but writes attempt the remote call first and surface errors to the caller if it fails.
 
 ## Philosophy
 
-The guiding principle is that the network is an optimisation, not a requirement. When a customer creates a sale, browses the product catalogue, or navigates categories, the interaction completes against the local store immediately. The remote push happens asynchronously and, if it fails, is retried or queued for a later sync pass.
+The guiding principle is that the network is an optimisation, not a requirement. When a customer browses the product catalogue or navigates categories, the interaction falls back to the local store immediately if the network is unavailable. For sale creation on Android, the local write happens first and the remote push is retried or queued — meaning the app works even when Appwrite is temporarily unreachable.
 
 This approach maps directly to real-world operating conditions: Cuban mobile and home internet connections are frequently intermittent, and the app must remain useful regardless of whether Appwrite is reachable at the moment of interaction.
 
 ```
-Local store (Room / Dexie)
-        ↓  immediate
-User action ──→ local write succeeds
-        ↓  async / best-effort
-Appwrite ← push; retry on failure; sync reconciles on reconnect
+Android writes:
+  User action ──→ Room local write (immediate)
+                      ↓  async / best-effort
+               Appwrite push; retry on failure; sync reconciles on reconnect
+
+Web reads:
+  User action ──→ Appwrite fetch → cache in Dexie → return data
+                      ↓  on network failure
+               Dexie local fallback (stale data)
+
+Web writes (create / update):
+  User action ──→ Appwrite call (remote first) → cache result in Dexie
+                      ↓  on network failure
+               Error thrown to caller (no silent local fallback)
 ```
 
 ---
@@ -241,13 +250,13 @@ The remote push is wrapped in `runCatching`, so a network failure does not roll 
 
 <Steps>
   <Step title="Local operation">
-    The DAO (Room) or Dexie table receives the write immediately. For reads, the local table is queried as the fallback.
+    On Android, the Room DAO receives the write immediately before any remote call. On web, the Dexie table is written only after a successful remote call (acting as a local mirror, not a primary store). For reads on both platforms, the local table is always the fallback.
   </Step>
   <Step title="Remote operation">
     The net repository calls Appwrite. For reads, the response is bulk-put into the local store. For writes, the result is inserted/updated locally to mirror the canonical remote state.
   </Step>
   <Step title="Reconciliation">
-    On failure the local store is used as-is for reads. For writes that failed remotely the record stays in the local pending set until `SyncSalesCaseUse` reconciles it.
+    On failure the local store is used as-is for reads. For write operations, the behaviour differs by platform: on Android, `save()` writes locally first and the failed remote push is retried by `SyncSalesCaseUse`. On web, `create()` and `updateVerified()` attempt the remote call first — if that fails, the error is thrown and the caller must handle it; there is no silent local fallback for writes.
   </Step>
 </Steps>
 
@@ -350,7 +359,7 @@ Conflict resolution is remote-wins at the record level. Field-level merging (las
 |-----------|----------------------|
 | `getAllSales()` / `getAll()` | Returns full local cache |
 | `getByUser(userId)` | Filters local Dexie/Room store by `user_id` |
-| `create(sale)` | Local write succeeds; remote push fails; sale queued for next sync |
+| `create(sale)` | Remote write attempted first; if it fails, error is thrown — no local fallback, no queue (Android: local write first, then best-effort remote push) |
 | `updateVerified(id, state)` | Throws; caller must handle and surface error to UI |
 | `sync(userId)` | Local records without a matching remote ID remain in the pending set |
 

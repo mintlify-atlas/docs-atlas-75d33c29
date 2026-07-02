@@ -1,7 +1,7 @@
 ---
-title: "End-to-End Sale Lifecycle in AlejoTaller"
+title: "End-to-End Sale Flow: Creation, Verification, and Sync"
 sidebarTitle: "Sale Flow"
-description: "Trace a complete sale from customer order creation through operator verification to real-time confirmation, covering Appwrite persistence, Pusher events, and local state reconciliation."
+description: "Trace a sale from order creation through operator verification to Pusher confirmation, covering Appwrite persistence and local Room/Dexie reconciliation."
 ---
 
 A sale in AlejoTaller travels through four distinct stages before it is resolved: the customer creates an order, the operator reviews and decides, the publisher microservice fires a Pusher event, and the client app applies the result to its local state. Each stage is handled by a dedicated layer — use cases, repositories, and realtime infrastructure — so that a failure in one stage does not silently corrupt another.
@@ -43,10 +43,9 @@ A sale can only move forward — there is no path from `VERIFIED` or `DELETED` b
 flowchart TD
     A[Customer adds items to cart] --> B[RegisterNewSaleCaseUse / RegisterNewSaleCauseUse]
     B --> C[Sale.verified = UNVERIFIED]
-    C --> D[Save to Room / Dexie locally]
-    D --> E[Push to Appwrite]
-    E --> F[Send Telegram notification]
-    F --> G[Operator app loads pending sales from Appwrite]
+    C --> F[Send Telegram notification]
+    F --> D[Save to Room / Dexie and push to Appwrite]
+    D --> G[Operator app loads pending sales from Appwrite]
     G --> H{Operator decision}
     H -->|confirm| I[Update buy_state → VERIFIED on Appwrite]
     H -->|reject|  J[Update buy_state → DELETED on Appwrite]
@@ -132,12 +131,12 @@ flowchart TD
     `saleIdProvider.nextId()` generates the Appwrite document ID before the save, so the same ID is used for both the local Room/Dexie record and the remote Appwrite document.
   </Step>
 
-  <Step title="Sale persisted locally then pushed remotely">
-    `SaleOfflineFirstRepository.save()` writes to Room first, then attempts the remote push with up to three retries. A network failure at this point leaves the sale in `UNVERIFIED` state in the local database; it will be pushed on the next `SyncSalesCaseUse` invocation.
+  <Step title="Telegram notification sent first">
+    A Telegram message is dispatched via `TelegramNotificatorImpl` **before** the repository call in both web (`RegisterNewSaleCaseUse`) and Android (`RegisterNewSaleCauseUse`). This gives the business owner immediate visibility of new orders through a channel that does not require the operator app to be open.
   </Step>
 
-  <Step title="Telegram notification sent">
-    A Telegram message is dispatched via `TelegramNotificatorImpl` before the repository call. This gives the business owner immediate visibility of new orders through a channel that does not require the operator app to be open.
+  <Step title="Sale persisted and pushed to Appwrite">
+    On **Android**, `SaleOfflineFirstRepository.save()` writes to Room first, then attempts the remote push with up to three retries — a network failure leaves the sale in `UNVERIFIED` state locally and it is reconciled by the next `SyncSalesCaseUse` invocation. On **web**, `SaleOfflineFirstRepository.create()` calls the Appwrite remote first; on success the returned document is cached in Dexie. If the remote call fails, the error is thrown — there is no local-only fallback for web sale creation.
   </Step>
 </Steps>
 

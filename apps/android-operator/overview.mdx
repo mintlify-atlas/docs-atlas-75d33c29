@@ -1,7 +1,7 @@
 ---
 title: "Android Operator App: QR Scanner and Order Verifier"
 sidebarTitle: "Overview"
-description: "AlejoTallerScan is the operator-facing Android app for scanning QR codes, verifying customer orders, and publishing real-time confirmation events via alejo_publisher."
+description: "AlejoTallerScan: operator Android app for scanning sale QR codes, verifying orders in Appwrite, and publishing realtime events via alejo_publisher."
 ---
 
 AlejoTallerScan is the operator surface of the AlejoTaller monorepo. Store operators use it to confirm or reject customer sales in real time: they scan a QR code presented by the customer (or look up a reservation manually), review the order details fetched from Appwrite, apply a decision, and trigger a Pusher event through the `alejo_publisher` function so both the Android client app and the web client react immediately.
@@ -55,7 +55,7 @@ The operator app is the only actor that writes the `buy_state` field on a sale d
 | Dependency injection | Koin |
 | Backend | Appwrite Kotlin SDK |
 | Publisher HTTP client | OkHttp (`POST /sale-verification/publish`) |
-| Realtime events | Pusher Java Client |
+| Realtime events | Pusher (via `alejo_publisher` HTTP call — operator publishes, does not subscribe) |
 | Async | Kotlin Coroutines, StateFlow |
 | Navigation | Jetpack Navigation 3 |
 | Min SDK | 26 (Android 8.0) |
@@ -64,7 +64,7 @@ The operator app is the only actor that writes the `buy_state` field on a sale d
 
 AlejoTallerScan depends on four shared Gradle modules that live at the monorepo root:
 
-- **shared-auth** — operator authentication and the `OperatorAccess` role check (`operator`, `admin`, `administrator`, `owner`)
+- **shared-auth** — operator authentication and the `hasOperatorAccess()` role-check function defined in `OperatorAccess.kt` (`operator`, `admin`, `administrator`, `owner`)
 - **shared-core** — cross-cutting utilities and rules reused across all surfaces
 - **shared-data** — `SaleDto`, `SaleDao`, `SaleNetRepository`, mappers, and persistence converters
 - **shared-sale** — sale domain entities (`Sale`, `BuyState`), use cases (`GetSalesByIdCaseUse`, `SyncSalesCaseUse`, `ObserveAllSalesCaseUse`, `UpdateSaleVerificationFromRealtimeCaseUse`), and repository contracts

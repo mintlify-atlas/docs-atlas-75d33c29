@@ -18,7 +18,7 @@ The `auth` feature handles all identity flows — from first-time account creati
 |---|---|
 | `OpenSessionCaseUse` | Email/password login — opens an Appwrite session for the user |
 | `CreateAccountCaseUse` | Registers a new customer account |
-| `CloseSessionsCaseUse` | Terminates all active sessions for the current user |
+| `CloseSessionsCaseUSe` | Terminates all active sessions for the current user |
 | `GetCurrentUserCaseUse` | Retrieves the currently authenticated user |
 
 Guest sessions are supported: unauthenticated users can browse the catalog before being prompted to sign in at the point of purchase.
@@ -56,7 +56,9 @@ Administrators can manage other user accounts without leaving the web client. Th
 | Use Case | What it does |
 |---|---|
 | `CreateManagedUserCaseUse` | Creates a new user account on behalf of an admin |
-| `UpdateManagedUserCaseUses` | Updates the managed user's profile fields |
+| `UpdateManagedUserLabelsCaseUse` | Updates the managed user's label/role fields |
+| `UpdateManagedUserStatusCaseUse` | Updates the managed user's account status |
+| `UpdateManagedUserPasswordCaseUse` | Resets the managed user's password |
 | `DeleteUserCaseUse` | Permanently removes a user account |
 | `GetAllUsersCaseUse` | Lists all user accounts for admin review |
 

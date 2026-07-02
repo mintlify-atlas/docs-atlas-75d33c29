@@ -1,7 +1,7 @@
 ---
 title: "AlejoTaller Monorepo Architecture and Design Patterns"
 sidebarTitle: "Architecture"
-description: "Understand the feature-first layered architecture, shared Kotlin modules, and offline-first reconciliation strategy that power AlejoTaller across all surfaces."
+description: "Feature-first layered structure, shared Kotlin modules, and the offline-first reconciliation strategy that keep AlejoTaller consistent across all surfaces."
 ---
 
 AlejoTaller is organised as a single monorepo that spans two Android applications, a Svelte web client, and a Node microservice, all sharing a common architectural language. Every surface follows the same feature-first, layered decomposition and relies on shared Kotlin modules for business-critical logic — so changes to the sale domain, authentication contracts, or mapper rules propagate consistently without manual duplication.

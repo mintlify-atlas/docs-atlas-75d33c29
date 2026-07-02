@@ -1,7 +1,7 @@
 ---
-title: "Build and Run the AlejoTaller Android Client"
+title: "AlejoTaller Android Client: Gradle Build and Setup"
 sidebarTitle: "Build & Run"
-description: "Step-by-step instructions to compile and install the AlejoTaller Android client app using Gradle, with configuration via local.properties and BuildConfig."
+description: "Step-by-step guide to build, configure, and install the AlejoTaller Android client via Gradle tasks, local.properties, and BuildConfig."
 ---
 
 The Android client app is a standard Gradle project rooted at `app/` inside the monorepo. All configuration — Appwrite credentials, Pusher keys, and payment gateway URLs — is injected at build time from a `local.properties` file into `BuildConfig` fields, so no secrets live in source control.
@@ -143,7 +143,7 @@ dependencies {
 }
 ```
 
-```
+```text
 AlejoTaller/
 ├── app/                ← :app  (Android client)
 ├── shared-auth/        ← :shared-auth
@@ -175,7 +175,7 @@ The release build type enables R8 (`isMinifyEnabled = true`, `isShrinkResources 
 
 **APK output location:**
 
-```
+```text
 app/build/outputs/apk/debug/app-debug.apk
 app/build/outputs/apk/release/app-release.apk
 ```

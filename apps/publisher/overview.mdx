@@ -1,7 +1,7 @@
 ---
 title: "alejo_publisher: Secure Pusher Event Relay Service"
 sidebarTitle: "Overview"
-description: "alejo_publisher is a minimal Node.js/Express microservice that receives operator decisions and publishes real-time sale verification events to Pusher channels."
+description: "alejo_publisher is a lightweight Node.js/Express microservice that receives operator decisions and publishes them as Pusher events."
 ---
 
 `alejo_publisher` is a small, focused HTTP microservice that sits between the Android operator app and Pusher. Its sole responsibility is to receive an authenticated sale decision from the operator, sign and publish the corresponding Pusher event, and return the channel name and event name that were triggered — all without ever exposing Pusher credentials to any client device.

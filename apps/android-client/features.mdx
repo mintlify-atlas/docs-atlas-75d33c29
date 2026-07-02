@@ -1,7 +1,7 @@
 ---
-title: "Android Client Feature Set and Use Cases"
+title: "AlejoTaller Android Client: Features and Use Cases"
 sidebarTitle: "Features"
-description: "Detailed breakdown of the AlejoTaller Android client features: authentication, product catalog, cart management, purchase flow, and real-time sale verification."
+description: "Detailed breakdown of every feature in the AlejoTaller Android client: authentication, catalog, sales, settings, exchange rates, and realtime events."
 ---
 
 The Android client is organised into self-contained feature modules, each following the same `data / domain / presentation / di` layering. This page documents what each feature does and which use cases drive its business logic. All use-case names below are taken directly from the source tree.
@@ -117,7 +117,7 @@ enum class Currency    { CUP, USD, MLC }
 
 ### BuyState Lifecycle
 
-```
+```text
 UNVERIFIED  ──► VERIFIED   (operator confirms)
             └─► DELETED    (operator rejects)
 ```
@@ -167,7 +167,7 @@ Real-time sale verification is the mechanism that closes the loop between the op
 
 ### Channel Naming
 
-```
+```text
 sale-verification-{userId}
 ```
 

@@ -1,7 +1,7 @@
 ---
-title: "alejo_publisher REST API Reference"
+title: "alejo_publisher REST API: Endpoints, Schemas, and Errors"
 sidebarTitle: "API Reference"
-description: "Full reference for the two alejo_publisher endpoints: GET /health for liveness checks and POST /sale-verification/publish for broadcasting sale decisions to Pusher."
+description: "Full reference for alejo_publisher: GET /health and POST /sale-verification/publish, with request fields, responses, and error codes."
 ---
 
 `alejo_publisher` exposes exactly two HTTP endpoints. The health endpoint requires no credentials and is used by uptime monitors and load balancers. The publish endpoint requires a Bearer token and is called exclusively by the operator application after it has confirmed a sale decision in Appwrite.

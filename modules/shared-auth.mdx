@@ -1,7 +1,7 @@
 ---
 title: "shared-auth: Shared Android Authentication Module"
 sidebarTitle: "shared-auth"
-description: "The shared-auth Kotlin module provides authentication use cases, entities, and repository contracts shared between the AlejoTaller client and operator Android apps."
+description: "shared-auth centralizes authentication use cases, domain entities, and repository contracts shared across the AlejoTaller client and operator Android apps."
 ---
 
 The `shared-auth` module is an Android library that centralizes all authentication logic for the AlejoTaller monorepo. Both the customer app (`app`) and the operator scanner app (`alejotallerscan`) depend on this module, ensuring that session management, user identity, and role enforcement are never duplicated across surfaces. All concrete infrastructure (Appwrite SDK calls, DataStore persistence) lives in `shared-data`; `shared-auth` exposes only pure domain contracts and use cases.

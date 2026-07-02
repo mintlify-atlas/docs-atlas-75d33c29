@@ -1,13 +1,13 @@
 ---
 title: "shared-core and shared-data: Cross-Cutting Android Modules"
 sidebarTitle: "shared-core & shared-data"
-description: "shared-core provides cross-cutting utilities and domain rules while shared-data supplies DTOs, mappers, and repository infrastructure used across all AlejoTaller Android surfaces."
+description: "shared-core holds cross-cutting domain primitives; shared-data provides DTOs, mappers, and repository implementations for AlejoTaller Android surfaces."
 ---
 
 `shared-core` and `shared-data` form the infrastructure foundation of the AlejoTaller monorepo. `shared-core` is the thinnest layer — a pure Android library exposing only cross-cutting domain primitives that any feature module can import without pulling in persistence or network code. `shared-data` builds on top of it (and on `shared-auth` and `shared-sale`) to provide concrete persistence, mapping, and remote-sync implementations backed by Room, Appwrite, and Pusher. A third companion module, `mapper-processor`, contributes a KSP annotation processor that can generate boilerplate `toDomain` / `toDto` mapping extension functions at compile time.
 
 <Note>
-All three modules are Android libraries (they apply `com.android.library` or `java-library`). `shared-core` and `shared-data` require an Android build environment — they cannot run as standalone JVM modules. Both target `minSdk = 26` and compile against SDK 36 with Java 17 source compatibility.
+`shared-core` and `shared-data` are Android libraries (`com.android.library`) and require an Android build environment. Both target `minSdk = 26`, compile against SDK 36, and use Java 17 source compatibility. `mapper-processor` is a pure JVM library (`java-library`) with no Android dependency — it targets Java 11 and has no `minSdk`.
 </Note>
 
 ---
@@ -340,12 +340,15 @@ data class SaleRemoteConfig(
 
 ```kotlin
 class DateTimeConverter {
+    @TypeConverter fun fromLocalDateTime(value: LocalDateTime?): String? = value?.toString()
+    @TypeConverter fun toLocalDateTime(value: String?): LocalDateTime? = value?.let { LocalDateTime.parse(it) }
     @TypeConverter fun fromLocalDate(value: LocalDate?): String? = value?.toString()
     @TypeConverter fun toLocalDate(value: String?): LocalDate? = value?.let { LocalDate.parse(it) }
-    // also handles LocalDateTime
 }
 
 class ListConverter {
+    @TypeConverter fun fromList(value: List<String>?): String? = value?.let { Json.encodeToString(it) }
+    @TypeConverter fun toList(value: String?): List<String>? = value?.let { Json.decodeFromString<List<String>>(it) }
     @TypeConverter fun fromSaleItemList(value: List<SaleItem>?): String? =
         value?.let { Json.encodeToString(it) }
     @TypeConverter fun toSaleItemList(value: String?): List<SaleItem>? =
@@ -443,6 +446,17 @@ META-INF/services/com.google.devtools.ksp.processing.SymbolProcessorProvider
 plugins {
     id("java-library")
     alias(libs.plugins.jetbrains.kotlin.jvm)
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11
+    }
 }
 
 dependencies {

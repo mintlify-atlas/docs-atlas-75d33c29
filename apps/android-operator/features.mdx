@@ -1,23 +1,25 @@
 ---
-title: "Operator App Features: QR Scan, Verify, and Sync"
+title: "Operator App Features: Scanning, Verification, and Sync"
 sidebarTitle: "Features"
-description: "Breakdown of AlejoTallerScan features: QR barcode scanning, sale verification and rejection, local history, offline pending sync, and real-time conflict notifications."
+description: "AlejoTallerScan operator-side features: QR barcode scanning, sale confirm/reject flow, local history, offline pending sync, and conflict alerts."
 ---
 
 AlejoTallerScan is composed of discrete feature modules, each following the same layered structure — `data`, `domain`, and `presentation`. This page walks through each feature, the key domain classes behind it, and how they connect to the broader monorepo flow.
 
 ## Authentication
 
-Operators log in through `OperatorAuthViewModel`, which delegates to `AuthOperatorUserCaseUse` from the `shared-auth` module. After login, access is gated by the `hasOperatorAccess()` extension function defined on the `OperatorAccess` entity:
+Operators log in through `OperatorAuthViewModel`, which delegates to `AuthOperatorUserCaseUse` from the `shared-auth` module. After login, access is gated by the `hasOperatorAccess()` extension function defined in `OperatorAccess.kt`:
 
 ```kotlin
-// shared-auth — OperatorAccess.kt
+// shared-auth — OperatorAccess.kt (file-level extension functions, no class)
 private val OPERATOR_ALLOWED_ROLES = setOf("operator", "admin", "administrator", "owner")
+
+fun String?.normalizeBusinessRole(): String? = this?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
 
 fun String?.hasOperatorAccess(): Boolean = normalizeBusinessRole() in OPERATOR_ALLOWED_ROLES
 ```
 
-Only accounts whose role normalizes to one of the four allowed values can proceed past the login screen. Any other Appwrite account is denied access at the domain layer before any sale data is fetched.
+Only accounts whose role normalizes to one of the four allowed values can proceed past the login screen. Any other Appwrite account is denied access at the domain layer before any sale data is fetched. Note that `OperatorAccess.kt` contains no class — `hasOperatorAccess()` and `normalizeBusinessRole()` are plain Kotlin extension functions on `String?`.
 
 ## QR Code Scanning
 
@@ -161,6 +163,8 @@ Each pending sale is compared against its remote counterpart. If the remote stat
 
 The app requests `POST_NOTIFICATIONS` permission at the manifest level. On first launch on Android 13+, the user is prompted for notification permission. The notification informs the operator of the `saleId` and the customer name, preventing them from attempting to re-process a sale that is no longer `UNVERIFIED`.
 
-## Realtime Subscription
+## Realtime Publishing
 
-The app uses Appwrite's realtime subscription to observe remote sale changes. `SubscribeRealtimeSyncCaseUse` (shared-sale) opens a channel and forwards incoming events to `InterpretSaleRealtimeEventCaseUse` and `UpdateSaleVerificationFromRealtimeCaseUse`, which update the local Room cache. This keeps the operator's view of recent sales fresh without requiring manual refresh, and makes conflict detection faster in environments with multiple active operators.
+The operator app does not subscribe to any Pusher channel. Instead, after verifying a sale in Appwrite, it calls `alejo_publisher` over HTTP to trigger a `sale:confirmed` or `sale:rejected` event on the appropriate Pusher channel. The publisher service — not the operator app — holds the Pusher server credentials and signs the event. This keeps secrets out of the APK and avoids clock-skew signature failures from mobile devices.
+
+The customer-facing Android app and the web client are the Pusher subscribers; they receive the events and update their UI accordingly.
